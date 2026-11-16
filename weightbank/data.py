@@ -41,9 +41,9 @@ def load(device: torch.device) -> Corpus:
 
 
 def sample(text: Tensor, batch: int, context: int, generator: torch.Generator) -> tuple[Tensor, Tensor]:
-    starts = torch.randint(len(text) - context - 1, (batch,), device=text.device, generator=generator)
-    windows = text[starts[:, None] + torch.arange(context + 1, device=text.device)].long()
-    return windows[:, :-1], windows[:, 1:]
+    starts = torch.randint(len(text) - context, (batch,), device=text.device, generator=generator)
+    drawn = text[starts[:, None] + torch.arange(context + 1, device=text.device)].long()
+    return drawn[:, :-1], drawn[:, 1:]
 
 
 def windows(text: Tensor, context: int) -> tuple[Tensor, Tensor]:

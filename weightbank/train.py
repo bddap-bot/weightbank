@@ -6,6 +6,7 @@ import math
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -14,7 +15,7 @@ from torch.amp.grad_scaler import GradScaler
 
 from weightbank import data
 from weightbank.configs import CONFIGS
-from weightbank.model import ModelConfig, Transformer
+from weightbank.model import CONTEXT, Picks, Transformer
 
 RUNS = Path("runs")
 STEPS = 8000
@@ -24,13 +25,20 @@ PEAK_RATE = 1e-3
 WARMUP = 200
 WEIGHT_DECAY = 0.1
 LOG_EVERY = 500
+LOG_WINDOWS = 8 * EVAL_BATCH
+
+
+@dataclass
+class PickStats:
+    counts: list[list[int]]
+    confidence: list[float]
 
 
 @dataclass
 class Evaluation:
     loss: float
-    feed_forward_picks: list[list[int]]
-    attention_picks: list[list[int]]
+    feed_forward: PickStats | None
+    attention: PickStats | None
 
 
 @dataclass
@@ -40,10 +48,19 @@ class Run:
     steps: int
     stored_weights: int
     validation_loss: float
-    wall_seconds: float
-    feed_forward_picks: list[list[int]]
-    attention_picks: list[list[int]]
-    curve: list[tuple[int, float]]
+    sampled_picks_validation_loss: float
+    training_seconds: float
+    feed_forward: PickStats | None
+    attention: PickStats | None
+    curve: list[list[float]]
+
+    @staticmethod
+    def read(path: Path) -> Run:
+        fields: dict[str, Any] = json.loads(path.read_text())
+        for kind in ("feed_forward", "attention"):
+            if fields[kind] is not None:
+                fields[kind] = PickStats(**fields[kind])
+        return Run(**fields)
 
 
 def run_path(config: str, seed: int) -> Path:
@@ -57,39 +74,51 @@ def rate(step: int, steps: int) -> float:
     return PEAK_RATE * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * progress)))
 
 
-def count(picks: list[Tensor], chunks: int) -> Tensor:
-    return torch.stack([torch.bincount(pick.flatten(), minlength=chunks) for pick in picks])
+class PickTally:
+    def __init__(self) -> None:
+        self.counts: Tensor | None = None
+        self.confidence: Tensor | None = None
+
+    def add(self, trace: list[Picks]) -> None:
+        if not trace:
+            return
+        chunks = trace[0].hard.shape[-1]
+        counts = torch.stack([torch.bincount(picks.chunk.flatten(), minlength=chunks) for picks in trace])
+        confidence = torch.stack([picks.confidence.sum() for picks in trace])
+        self.counts = counts if self.counts is None else self.counts + counts
+        self.confidence = confidence if self.confidence is None else self.confidence + confidence
+
+    def stats(self) -> PickStats | None:
+        if self.counts is None or self.confidence is None:
+            return None
+        return PickStats(
+            counts=self.counts.tolist(),
+            confidence=(self.confidence / self.counts.sum(-1)).tolist(),
+        )
 
 
 @torch.no_grad()
-def evaluate(model: Transformer, text: Tensor, limit: int | None = None) -> Evaluation:
-    model.eval()
-    config: ModelConfig = model.config
-    inputs, targets = data.windows(text, config.context)
+def evaluate(
+    model: Transformer, text: Tensor, windows: int | None = None, sample_picks: bool = False
+) -> Evaluation:
+    model.train(sample_picks)
+    inputs, targets = data.windows(text, CONTEXT)
     total = 0.0
     tokens = 0
-    feed_forward: Tensor | None = None
-    attention: Tensor | None = None
-    for start in range(0, len(inputs) if limit is None else limit, EVAL_BATCH):
+    feed_forward = PickTally()
+    attention = PickTally()
+    for start in range(0, len(inputs) if windows is None else windows, EVAL_BATCH):
         batch = inputs[start : start + EVAL_BATCH]
         with torch.autocast(batch.device.type, dtype=torch.float16):
-            logits, picks = model(batch)
+            logits, trace = model(batch)
         total += F.cross_entropy(
             logits.float().flatten(0, 1), targets[start : start + EVAL_BATCH].flatten(), reduction="sum"
         ).item()
         tokens += batch.numel()
-        if picks.feed_forward:
-            counts = count(picks.feed_forward, config.chunks(config.feed_forward))
-            feed_forward = counts if feed_forward is None else feed_forward + counts
-        if picks.attention:
-            counts = count(picks.attention, config.chunks(config.attention))
-            attention = counts if attention is None else attention + counts
+        feed_forward.add(trace.feed_forward)
+        attention.add(trace.attention)
     model.train()
-    return Evaluation(
-        loss=total / tokens,
-        feed_forward_picks=[] if feed_forward is None else feed_forward.tolist(),
-        attention_picks=[] if attention is None else attention.tolist(),
-    )
+    return Evaluation(total / tokens, feed_forward.stats(), attention.stats())
 
 
 def train(name: str, seed: int, steps: int) -> Run:
@@ -113,12 +142,13 @@ def train(name: str, seed: int, steps: int) -> Run:
         betas=(0.9, 0.95),
     )
     scaler = GradScaler()
-    curve: list[tuple[int, float]] = []
+    curve: list[list[float]] = []
+    seconds = 0.0
     started = time.monotonic()
     for step in range(steps):
         for group in optimizer.param_groups:
             group["lr"] = rate(step, steps)
-        inputs, targets = data.sample(corpus.train, BATCH, model.config.context, generator)
+        inputs, targets = data.sample(corpus.train, BATCH, CONTEXT, generator)
         with torch.autocast(device.type, dtype=torch.float16):
             logits, _ = model(inputs)
         loss = F.cross_entropy(logits.float().flatten(0, 1), targets.flatten())
@@ -129,25 +159,35 @@ def train(name: str, seed: int, steps: int) -> Run:
         scaler.step(optimizer)
         scaler.update()
         if (step + 1) % LOG_EVERY == 0:
-            validation = evaluate(model, corpus.validation, limit=8 * EVAL_BATCH).loss
-            curve.append((step + 1, validation))
+            if not math.isfinite(loss.item()):
+                raise RuntimeError(f"training loss {loss.item()} at step {step + 1}")
+            seconds += time.monotonic() - started
+            validation = evaluate(model, corpus.validation, windows=LOG_WINDOWS).loss
+            curve.append([step + 1, validation])
             print(
                 f"step {step + 1} train {loss.item():.4f} validation {validation:.4f} "
-                f"elapsed {time.monotonic() - started:.0f}s",
+                f"training {seconds:.0f}s",
                 flush=True,
             )
+            started = time.monotonic()
+    seconds += time.monotonic() - started
     final = evaluate(model, corpus.validation)
-    wall = time.monotonic() - started
-    print(f"final validation loss {final.loss:.4f} nats/byte, wall {wall:.0f}s", flush=True)
+    sampled = evaluate(model, corpus.validation, sample_picks=True)
+    print(
+        f"final validation loss {final.loss:.4f} nats/byte "
+        f"({sampled.loss:.4f} with sampled picks), training {seconds:.0f}s",
+        flush=True,
+    )
     return Run(
         config=name,
         seed=seed,
         steps=steps,
         stored_weights=stored,
         validation_loss=final.loss,
-        wall_seconds=wall,
-        feed_forward_picks=final.feed_forward_picks,
-        attention_picks=final.attention_picks,
+        sampled_picks_validation_loss=sampled.loss,
+        training_seconds=seconds,
+        feed_forward=final.feed_forward,
+        attention=final.attention,
         curve=curve,
     )
 
@@ -156,13 +196,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train one configuration at one seed.")
     parser.add_argument("config", choices=sorted(CONFIGS))
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--steps", type=int, default=STEPS)
-    parser.add_argument("--out", type=Path, default=None)
     arguments = parser.parse_args()
-    run = train(arguments.config, arguments.seed, arguments.steps)
-    out: Path = arguments.out or run_path(arguments.config, arguments.seed)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(asdict(run), indent=1) + "\n")
+    run = train(arguments.config, arguments.seed, STEPS)
+    path = run_path(arguments.config, arguments.seed)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_suffix(".partial")
+    partial.write_text(json.dumps(asdict(run), indent=1) + "\n")
+    partial.replace(path)
 
 
 if __name__ == "__main__":

@@ -2,41 +2,61 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
-from enum import Enum
+from dataclasses import dataclass, field
+from typing import Generic, TypeVar
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
+HEADS = 4
+CONTEXT = 256
+VOCAB = 256
+ROUTER_WIDTH = 64
 
-class Weights(Enum):
-    OWN = "own"
-    ROUTED = "routed"
-    PINNED = "pinned"
+
+@dataclass(frozen=True)
+class Own:
+    pass
+
+
+@dataclass(frozen=True)
+class Fixed:
+    chunks: int
+
+
+@dataclass(frozen=True)
+class Routed:
+    chunks: int
+
+
+Sharing = Own | Fixed | Routed
 
 
 @dataclass(frozen=True)
 class ModelConfig:
     modules: int
     width: int
-    feed_forward: Weights = Weights.OWN
-    attention: Weights = Weights.OWN
-    bank: int = 0
-    heads: int = 4
-    context: int = 256
-    vocab: int = 256
-    router_width: int = 64
+    feed_forward: Sharing = Own()
+    attention: Sharing = Own()
 
-    def chunks(self, weights: Weights) -> int:
-        return self.bank if weights is Weights.ROUTED else self.modules
+
+def linear(inputs: int, outputs: int, std: float = 0.02) -> nn.Linear:
+    layer = nn.Linear(inputs, outputs)
+    nn.init.normal_(layer.weight, std=std)
+    nn.init.zeros_(layer.bias)
+    return layer
+
+
+def residual_std(config: ModelConfig) -> float:
+    return 0.02 / math.sqrt(2 * config.modules)
 
 
 class FeedForward(nn.Module):
-    def __init__(self, width: int) -> None:
+    def __init__(self, config: ModelConfig) -> None:
         super().__init__()
-        self.up = nn.Linear(width, 4 * width)
-        self.down = nn.Linear(4 * width, width)
+        self.up = linear(config.width, 4 * config.width)
+        self.down = linear(4 * config.width, config.width, residual_std(config))
 
     def forward(self, x: Tensor) -> Tensor:
         out: Tensor = self.down(F.gelu(self.up(x)))
@@ -44,30 +64,48 @@ class FeedForward(nn.Module):
 
 
 class AttentionWeights(nn.Module):
-    def __init__(self, width: int) -> None:
+    def __init__(self, config: ModelConfig) -> None:
         super().__init__()
-        self.qkv = nn.Linear(width, 3 * width)
-        self.down = nn.Linear(width, width)
+        self.qkv = linear(config.width, 3 * config.width)
+        self.down = linear(config.width, config.width, residual_std(config))
+
+
+def attend(qkv: Tensor) -> Tensor:
+    batch, length, _ = qkv.shape
+    q, k, v = (part.view(batch, length, HEADS, -1).transpose(1, 2) for part in qkv.chunk(3, dim=-1))
+    out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+    return out.transpose(1, 2).reshape(batch, length, -1)
+
+
+@dataclass
+class Picks:
+    hard: Tensor
+    confidence: Tensor
+
+    @property
+    def chunk(self) -> Tensor:
+        return self.hard.argmax(-1)
 
 
 class Router(nn.Module):
-    def __init__(self, config: ModelConfig) -> None:
+    def __init__(self, config: ModelConfig, chunks: int) -> None:
         super().__init__()
-        self.data = nn.Linear(config.width, config.router_width)
-        self.asker = nn.Embedding(config.modules, config.router_width)
-        self.score = nn.Linear(config.router_width, config.bank)
+        self.data = linear(config.width, ROUTER_WIDTH)
+        self.asker = nn.Parameter(torch.randn(config.modules, ROUTER_WIDTH) * 0.02)
+        self.score = linear(ROUTER_WIDTH, chunks)
 
-    def forward(self, x: Tensor, module: int) -> Tensor:
-        logits: Tensor = self.score(torch.tanh(self.data(x) + self.asker.weight[module])).float()
-        if not self.training:
-            return F.one_hot(logits.argmax(-1), logits.shape[-1]).float()
-        return F.gumbel_softmax(logits, tau=1.0, hard=True)
+    def forward(self, x: Tensor, module: int) -> Picks:
+        logits: Tensor = self.score(torch.tanh(self.data(x) + self.asker[module])).float()
+        confidence = logits.detach().softmax(-1).amax(-1)
+        if self.training:
+            return Picks(F.gumbel_softmax(logits, tau=1.0, hard=True), confidence)
+        return Picks(F.one_hot(logits.argmax(-1), logits.shape[-1]).float(), confidence)
 
 
-def pinned(like: Tensor, module: int, chunks: int) -> Tensor:
-    picks = torch.zeros(*like.shape[:-1], chunks, device=like.device)
-    picks[..., module] = 1.0
-    return picks
+def fixed(like: Tensor, chunk: int, chunks: int) -> Picks:
+    hard = torch.zeros(*like.shape[:-1], chunks, device=like.device)
+    hard[..., chunk] = 1.0
+    return Picks(hard, torch.ones(like.shape[:-1], device=like.device))
 
 
 def mix(chunks: Sequence[Callable[[Tensor], Tensor]], picks: Tensor, x: Tensor) -> Tensor:
@@ -83,87 +121,77 @@ def mix(chunks: Sequence[Callable[[Tensor], Tensor]], picks: Tensor, x: Tensor) 
     return out
 
 
-def attend(qkv: Tensor, heads: int) -> Tensor:
-    batch, length, _ = qkv.shape
-    q, k, v = (part.view(batch, length, heads, -1).transpose(1, 2) for part in qkv.chunk(3, dim=-1))
-    out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
-    return out.transpose(1, 2).reshape(batch, length, -1)
+Chunk = TypeVar("Chunk", bound=nn.Module)
+
+
+class Bank(nn.Module, Generic[Chunk]):
+    def __init__(self, config: ModelConfig, sharing: Sharing, chunk: Callable[[ModelConfig], Chunk]) -> None:
+        super().__init__()
+        self.sharing = sharing
+        count = config.modules if isinstance(sharing, Own) else sharing.chunks
+        self.chunks = tuple(chunk(config) for _ in range(count))
+        self.registered = nn.ModuleList(self.chunks)
+        self.router = Router(config, count) if isinstance(sharing, Routed) else None
+
+    def picks(self, x: Tensor, module: int) -> Picks | None:
+        if self.router is not None:
+            picks: Picks = self.router(x, module)
+            return picks
+        if isinstance(self.sharing, Fixed):
+            return fixed(x, module % self.sharing.chunks, self.sharing.chunks)
+        return None
 
 
 @dataclass
-class Picks:
-    feed_forward: list[Tensor]
-    attention: list[Tensor]
+class Trace:
+    feed_forward: list[Picks] = field(default_factory=list)
+    attention: list[Picks] = field(default_factory=list)
 
 
 class Transformer(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         self.config = config
-        self.token = nn.Embedding(config.vocab, config.width)
-        self.position = nn.Embedding(config.context, config.width)
+        self.token = nn.Embedding(VOCAB, config.width)
+        self.position = nn.Embedding(CONTEXT, config.width)
+        for embedding in (self.token, self.position):
+            nn.init.normal_(embedding.weight, std=0.02)
         self.attention_norm = nn.ModuleList(nn.LayerNorm(config.width) for _ in range(config.modules))
         self.feed_forward_norm = nn.ModuleList(nn.LayerNorm(config.width) for _ in range(config.modules))
-        self.attention = nn.ModuleList(
-            AttentionWeights(config.width) for _ in range(config.chunks(config.attention))
-        )
-        self.feed_forward = nn.ModuleList(
-            FeedForward(config.width) for _ in range(config.chunks(config.feed_forward))
-        )
-        self.attention_router = Router(config) if config.attention is Weights.ROUTED else None
-        self.feed_forward_router = Router(config) if config.feed_forward is Weights.ROUTED else None
+        self.attention = Bank(config, config.attention, AttentionWeights)
+        self.feed_forward = Bank(config, config.feed_forward, FeedForward)
         self.final_norm = nn.LayerNorm(config.width)
-        self.head = nn.Linear(config.width, config.vocab)
-        self.apply(self._init)
-        for name, parameter in self.named_parameters():
-            if name.endswith("down.weight"):
-                nn.init.normal_(parameter, std=0.02 / math.sqrt(2 * config.modules))
-
-    @staticmethod
-    def _init(module: nn.Module) -> None:
-        if isinstance(module, nn.Linear):
-            nn.init.normal_(module.weight, std=0.02)
-            nn.init.zeros_(module.bias)
-        elif isinstance(module, nn.Embedding):
-            nn.init.normal_(module.weight, std=0.02)
+        self.head = linear(config.width, VOCAB)
 
     def stored_weights(self) -> int:
         return sum(parameter.numel() for parameter in self.parameters())
 
-    def _picks(self, weights: Weights, router: Router | None, x: Tensor, module: int) -> Tensor | None:
-        if router is not None:
-            picks: Tensor = router(x, module)
-            return picks
-        if weights is Weights.PINNED:
-            return pinned(x, module, self.config.modules)
-        return None
-
-    def _attention(self, x: Tensor, module: int, record: list[Tensor]) -> Tensor:
-        picks = self._picks(self.config.attention, self.attention_router, x, module)
+    def _attention(self, x: Tensor, module: int, trace: list[Picks]) -> Tensor:
+        bank = self.attention
+        picks = bank.picks(x, module)
         if picks is None:
-            own = self.attention[module]
-            assert isinstance(own, AttentionWeights)
-            out: Tensor = own.down(attend(own.qkv(x), self.config.heads))
+            own = bank.chunks[module]
+            out: Tensor = own.down(attend(own.qkv(x)))
             return out
-        record.append(picks.argmax(-1))
-        chunks = [chunk for chunk in self.attention if isinstance(chunk, AttentionWeights)]
-        mixed = attend(mix([chunk.qkv for chunk in chunks], picks, x), self.config.heads)
-        return mix([chunk.down for chunk in chunks], picks, mixed)
+        trace.append(picks)
+        attended = attend(mix([chunk.qkv for chunk in bank.chunks], picks.hard, x))
+        return mix([chunk.down for chunk in bank.chunks], picks.hard, attended)
 
-    def _feed_forward(self, x: Tensor, module: int, record: list[Tensor]) -> Tensor:
-        picks = self._picks(self.config.feed_forward, self.feed_forward_router, x, module)
+    def _feed_forward(self, x: Tensor, module: int, trace: list[Picks]) -> Tensor:
+        bank = self.feed_forward
+        picks = bank.picks(x, module)
         if picks is None:
-            out: Tensor = self.feed_forward[module](x)
+            out: Tensor = bank.chunks[module](x)
             return out
-        record.append(picks.argmax(-1))
-        return mix(list(self.feed_forward), picks, x)
+        trace.append(picks)
+        return mix(bank.chunks, picks.hard, x)
 
-    def forward(self, tokens: Tensor) -> tuple[Tensor, Picks]:
-        picks = Picks([], [])
+    def forward(self, tokens: Tensor) -> tuple[Tensor, Trace]:
+        trace = Trace()
         positions = torch.arange(tokens.shape[1], device=tokens.device)
         x: Tensor = self.token(tokens) + self.position(positions)
         for module in range(self.config.modules):
-            x = x + self._attention(self.attention_norm[module](x), module, picks.attention)
-            x = x + self._feed_forward(self.feed_forward_norm[module](x), module, picks.feed_forward)
+            x = x + self._attention(self.attention_norm[module](x), module, trace.attention)
+            x = x + self._feed_forward(self.feed_forward_norm[module](x), module, trace.feed_forward)
         logits: Tensor = self.head(self.final_norm(x))
-        return logits, picks
+        return logits, trace
