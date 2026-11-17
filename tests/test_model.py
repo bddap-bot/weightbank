@@ -7,7 +7,6 @@ from torch import Tensor, nn
 
 from weightbank.configs import BANK, CONFIGS, FIXED_MAP, FULL, KEYS, MODULES, NO_ROUTER, NOISE_FREE, OWN_CHUNK
 from weightbank.model import (
-    ROUTER_WIDTH,
     VOCAB,
     Bank,
     Fixed,
@@ -249,12 +248,13 @@ def test_key_router_scores_each_chunk_by_the_dot_product_of_a_query_with_its_key
     assert isinstance(router, KeyRouter)
     x = torch.randn(64, 32)
     query = (x + router.asker[1]) @ router.query.weight.T + router.query.bias
-    expected = torch.stack([query @ key for key in router.keys], dim=-1) / math.sqrt(ROUTER_WIDTH)
+    expected = torch.stack([query @ key for key in router.keys], dim=-1)
     assert torch.allclose(router.logits(x, 1), expected, atol=1e-6)
     router.eval()
     assert torch.equal(router(x, 1).chunk, expected.argmax(-1))
     with torch.no_grad():
         router.asker.normal_()
+        router.keys.normal_()
     assert len(router(x, 0).chunk.unique()) > 1
     assert not torch.equal(router(x, 0).chunk, router(x, 1).chunk)
 
@@ -303,3 +303,16 @@ def test_the_fixed_map_stores_one_plain_layer_per_chunk_and_every_module_keeps_i
         _, trace = model(tokens())
         for kind in (trace.feed_forward, trace.attention):
             assert [picks.chunk.unique().tolist() for picks in kind] == [[module % chunks] for module in range(MODULES)]
+
+
+def test_both_router_forms_start_near_indifferent_at_the_same_scale() -> None:
+    torch.manual_seed(0)
+    x = torch.nn.functional.layer_norm(torch.randn(2048, 256), (256,))
+    spreads = []
+    for keys in (False, True):
+        router = Transformer(ModelConfig(8, 256, feed_forward=Routed(4, keys=keys))).feed_forward.router
+        assert router is not None
+        logits = router.logits(x, 0)
+        assert float(logits.softmax(-1).amax(-1).mean()) < 0.3
+        spreads.append(float(logits.std(-1).mean()))
+    assert 0.5 < spreads[1] / spreads[0] < 2

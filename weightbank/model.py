@@ -129,10 +129,10 @@ class KeyRouter(Router):
         super().__init__(sharing)
         self.query = linear(config.width, ROUTER_WIDTH)
         self.asker = nn.Parameter(torch.randn(config.modules, config.width) * 0.02)
-        self.keys = nn.Parameter(torch.randn(sharing.chunks, ROUTER_WIDTH))
+        self.keys = nn.Parameter(torch.randn(sharing.chunks, ROUTER_WIDTH) * 0.02)
 
     def logits(self, x: Tensor, module: int) -> Tensor:
-        logits: Tensor = self.query(x + self.asker[module]) @ self.keys.T / math.sqrt(ROUTER_WIDTH)
+        logits: Tensor = self.query(x + self.asker[module]) @ self.keys.T
         return logits
 
 
