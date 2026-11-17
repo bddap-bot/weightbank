@@ -83,16 +83,23 @@ class Budget:
     def shallower(self) -> list[Summary]:
         return [self.summaries[name] for name in (*SHALLOWER, FULL) if name in self.summaries]
 
-    def gaps(self, name: str) -> list[float]:
+    def curves(self) -> dict[str, list[Summary]]:
+        return {"narrower": self.narrower, "shallower": self.shallower}
+
+    def better(self, name: str) -> str:
+        stored = self.summaries[name].stored
+        curves = self.curves()
+        return min(curves, key=lambda curve: interpolate(means(curves[curve]), stored))
+
+    def gaps(self, name: str, curve: str) -> list[float]:
         summary = self.summaries[name]
-        better = min((self.narrower, self.shallower), key=lambda curve: interpolate(means(curve), summary.stored))
         return [
-            loss - interpolate([(plain.stored, plain.losses[seed]) for plain in better], summary.stored)
+            loss - interpolate([(plain.stored, plain.losses[seed]) for plain in self.curves()[curve]], summary.stored)
             for seed, loss in enumerate(summary.losses)
         ]
 
     def gap(self, name: str) -> float:
-        return fmean(self.gaps(name))
+        return fmean(self.gaps(name, self.better(name)))
 
 
 def read_budget(steps: int, rates: dict[str, float], seeds: Sequence[int]) -> Budget:
@@ -175,10 +182,10 @@ def both_budgets_table(first: Budget, long: Budget) -> str:
             f"{long.summaries[name].stored:,}",
             f"{first.summaries[name].rate:g}",
             f"{first.gap(name):+.4f}",
-            span(first.gaps(name)),
+            span(first.gaps(name, first.better(name))),
             f"{long.summaries[name].rate:g}",
             f"{long.gap(name):+.4f}",
-            span(long.gaps(name)),
+            span(long.gaps(name, long.better(name))),
             f"{long.gap(name) - first.gap(name):+.4f}",
         ]
         for name in (*ROUTED, NO_ROUTER)
@@ -199,20 +206,26 @@ def both_budgets_table(first: Budget, long: Budget) -> str:
     )
 
 
-def rate_alone_table(first: Budget, tuned: Budget) -> str:
-    rows = [
-        [
-            name,
-            f"{first.gap(name):+.4f}",
-            f"{tuned.summaries[name].rate:g}",
-            f"{tuned.gap(name):+.4f}",
-            f"{tuned.gap(name) - first.gap(name):+.4f}",
-        ]
-        for name in (*ROUTED, NO_ROUTER)
-    ]
+def rate_alone_table(first: Budget, at_first_rate: Budget, at_chosen_rates: Budget) -> str:
+    rows = []
+    for name in (*ROUTED, NO_ROUTER):
+        curve = first.better(name)
+        (before,) = at_first_rate.gaps(name, curve)
+        (after,) = at_chosen_rates.gaps(name, curve)
+        rows.append(
+            [
+                name,
+                curve,
+                f"{before:+.4f}",
+                f"{at_chosen_rates.summaries[name].rate:g}",
+                f"{after:+.4f}",
+                f"{after - before:+.4f}",
+            ]
+        )
     return table(
         [
             "configuration",
+            "plain curve",
             f"gap at {FIRST_RATE:g} everywhere",
             "chosen learning rate",
             "gap at the chosen rates",
@@ -502,6 +515,7 @@ def main() -> None:
     sections = {
         "both-budgets": both_budgets_table(first, long),
         "rate-alone": rate_alone_table(
+            first,
             read_budget(FIRST_STEPS, {name: FIRST_RATE for name in ARMS}, (SWEEP_SEED,)),
             read_budget(FIRST_STEPS, rates, (SWEEP_SEED,)),
         ),

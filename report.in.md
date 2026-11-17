@@ -17,7 +17,7 @@ READING
 
 ![Validation loss against stored weights](chart.png)
 
-The chart is the long budget. The dark line is the plain model narrowed from width 256 to 128
+The chart is the long budget. The dark line is the plain model narrowed from width 256 to 160
 at 8 modules; the lighter line is the plain model cut from 8 modules to 4 at width 256. Bands
 and bars run from the lowest to the highest of three seeds. The square is a control outside
 the question: both banks shared with no router, module i always using chunk i mod 4.
@@ -25,19 +25,20 @@ the question: both banks shared with no router, module i always using chunk i mo
 ## The gaps at both budgets
 
 Each plain curve is read at the configuration's stored weights by interpolating mean loss
-linearly in the logarithm of stored weights. The gap is taken to whichever curve is lower
+linearly in the logarithm of stored weights, and the gap is taken to whichever curve is lower
 there. Seeds share batches across configurations, so the gap is also computed seed by seed
-(the configuration at seed s against the plain curve of seed s); the range of those three is
-beside each mean.
+(the configuration at seed s against that same curve drawn from the plain runs of seed s);
+the range of those three is beside each mean.
 
 {{both-budgets}}
 
 Between the two budgets both the learning rate and the number of steps change. The next
 table changes the rate alone: the first budget, seed 0 only, with every configuration at 1e-3
-and then at its chosen rate. These are the sweep's own runs, so each loss in the right-hand
-gap is the lowest of the three or more that were tried, and a one-seed gap carries about a
-seed spread of noise (0.002 to 0.008 in the per-configuration table); it can show a shift of
-the size of the two large gaps and not of the two small ones.
+and then at its chosen rate, both read against the plain curve the first-budget gap above
+uses. These are the sweep's own runs, so each loss in the right-hand gap is the lowest of the
+three or more that were tried, and a one-seed gap carries about a seed spread of noise (0.002
+to 0.008 in the per-configuration table); it can show a shift of the size of the two large
+gaps and not of the two small ones.
 
 {{rate-alone}}
 
