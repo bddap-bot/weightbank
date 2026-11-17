@@ -3,35 +3,68 @@
 Every table below is written by `python -m weightbank.report` from the run files in `runs/`.
 Loss is cross-entropy on the validation split in nats per byte (divide by 0.693 for bits).
 
+Two experiments are reported together. The first trained every configuration for 8,000 steps
+at one learning rate (1e-3), three seeds. The second asks which of the first's gaps belong to
+the designs and which to a short or mis-tuned comparison: every configuration gets a learning
+rate chosen for it from a sweep, then three seeds at four times the budget (32,000 steps).
+A gap is a configuration's mean validation loss minus the better of the two plain curves read
+at its stored weights; negative means the configuration beats a plain model of its size.
+
 ## Reading
 
-Feed-forward routed (4,430,404 stored weights, loss 1.0977) sits 0.0032 nats per byte below the
-better plain curve (fewer modules), inside the seed spread of the plain points on either side
-of it (seed sd 0.0052 and 0.0080), and 0.0080 below the narrower plain curve, so it matches
-the best plain model of its size and does not beat it. Attention routed (5,480,004, loss 1.1146) sits 0.0242 above the narrower
-curve and 0.0263 above the shallower one, and both routed (3,394,952, loss 1.1452) sits 0.0184
-and 0.0300 above them, each several seed spreads worse than a plain model storing the same
-weights. The same two banks with no router, each module fixed to one chunk, reach 1.1004:
-0.0448 below both routed and 0.0153 below the better plain curve, so within this budget
-sharing weights across modules helped and choosing the chunk per token cost loss.
+READING
 
 ![Validation loss against stored weights](chart.png)
 
-The dark line is the plain model narrowed from width 256 to 128 at 8 modules; the lighter line
-is the plain model cut from 8 modules to 4 at width 256. Bands and bars run from the lowest to
-the highest of three seeds. The square is a control outside the question: both banks shared
-with no router, module i always using chunk i mod 4.
+The chart is the long budget. The dark line is the plain model narrowed from width 256 to 128
+at 8 modules; the lighter line is the plain model cut from 8 modules to 4 at width 256. Bands
+and bars run from the lowest to the highest of three seeds. The square is a control outside
+the question: both banks shared with no router, module i always using chunk i mod 4.
 
-## Routed configurations against the plain curves
+## The gaps at both budgets
 
-Each plain curve is read at the routed configuration's stored weights by interpolating mean
-loss linearly in the logarithm of stored weights.
+Each plain curve is read at the configuration's stored weights by interpolating mean loss
+linearly in the logarithm of stored weights.
 
-{{gaps}}
+{{both-budgets}}
+
+The middle gap column separates the two changes: it is the first budget rerun at the chosen
+learning rates, one seed, so it moves with the rate alone, and the column after it adds the
+longer budget.
+
+The plain curves the gaps are read against, at both budgets:
+
+{{plain}}
+
+### Long budget, both plain curves
+
+{{gaps-long}}
+
+### First budget, both plain curves
+
+{{gaps-first}}
 
 `both-routed` and `plain-l4` are an equal-storage pair that needs no interpolation: the same 4
 feed-forward and 4 attention chunks, applied 8 times with routing or 4 times without. The
 routed model adds 38,536 weights (two routers and four more modules' layer norms).
+
+## Choosing the learning rate
+
+Each configuration was trained once (seed 0, 8,000 steps) at peak rates 5e-4, 1e-3 and 2e-3;
+the 1e-3 run is the first experiment's seed-0 run. When the lowest final validation loss fell
+on the edge of the rates tried, the next rate a factor of two beyond it was added, until the
+lowest loss had a tried rate on both sides. The rate with the lowest loss (bold) is the one
+the configuration's three long runs use. The warm-up (200 steps) and the cosine decay to a
+tenth of the peak are the same at every rate and budget.
+
+{{sweep}}
+
+Limits of this choice: it is made on one seed, so where two rates differ by less than the seed
+spread in the tables below the pick between them is arbitrary; and it is made at 8,000 steps,
+on the assumption that the best peak rate does not move much when the cosine schedule is
+stretched to 32,000.
+
+CUTS
 
 ## Setup
 
@@ -40,9 +73,11 @@ routed model adds 38,536 weights (two routers and four more modules' layer norms
   validation loss is over all 19,531 non-overlapping 256-byte windows of that split.
 - Model: pre-norm decoder-only transformer, 8 modules, width 256, 4 heads, context 256,
   learned positions. A module is one layer: an attention step and a feed-forward step.
-- Budget, the same for every run: 8,000 steps of 64 windows, AdamW (peak rate 1e-3, 200 warm-up
-  steps, cosine decay to a tenth, weight decay 0.1 on matrices and embeddings), mixed precision (float16 autocast), gradient
-  clipping at 1. Seeds 0, 1, 2 set both the initial weights and the batches.
+- Budget: 8,000 steps of 64 windows in the first experiment and 32,000 in the second, AdamW
+  (peak rate 1e-3 in the first experiment and the chosen rate in the second, 200 warm-up
+  steps, cosine decay to a tenth of the peak over the run, weight decay 0.1 on matrices and
+  embeddings), mixed precision (float16 autocast), gradient clipping at 1. Seeds 0, 1, 2 set
+  both the initial weights and the batches.
 - Bank: 4 chunks of each routed kind for 8 modules. A feed-forward chunk is both linear maps
   of a feed-forward step; an attention chunk is the query/key/value map and the output map.
 - Router: one per routed kind, shared by all modules, 64 units wide. It scores the chunks from
@@ -61,7 +96,8 @@ routed model adds 38,536 weights (two routers and four more modules' layer norms
 - Private weights: each module keeps its own two layer norms (1,024 weights per module). No
   other per-module add-on. Stored weights count every parameter: bank chunks, routers and
   their module vectors, layer norms, embeddings and the output head.
-- Hardware: one RTX 2080, 8 GB, shared with other work, so wall times are indicative. During
+- Hardware: one RTX 2080, 8 GB, shared with other work, and in the second experiment with
+  other runs of the experiment itself (WALLNOTE), so wall times are indicative. During
   training a routed step computes every chunk for every token (the straight-through gradient
   needs them), which is why routed runs take longer; a hard pick needs only the picked chunk
   at inference, which this code does not exploit. `own-chunk` and `both-no-router` pay a
@@ -69,7 +105,8 @@ routed model adds 38,536 weights (two routers and four more modules' layer norms
 
 ## Sanity check: N = M, every module forced to its own chunk
 
-`own-chunk` runs the routed code path with a bank of 8 chunks of each kind and no router:
+This check belongs to the first experiment (8,000 steps, rate 1e-3) and was not repeated at
+the long budget. `own-chunk` runs the routed code path with a bank of 8 chunks of each kind and no router:
 module i always computes with chunk i. It starts from the same initial weights and sees the
 same batches as `full` at the same seed, so the comparison is paired by seed.
 
@@ -82,40 +119,44 @@ seed sd (0.0021): the routed code path with N = M reproduces the full control.
 
 `both-no-router` stores the same two banks as `both-routed` but fixes module i to chunk
 i mod 4, so it has no router and no per-token choice. At the same seed the two see the same
-batches (their initial weights differ):
+batches (their initial weights differ). At the long budget, each at its chosen rate:
 
-{{no-router}}
+{{no-router-long}}
+
+At the first budget:
+
+{{no-router-first}}
 
 ## Picks at validation against picks in training
 
 Training samples each pick with Gumbel noise; the reported loss takes the highest-scoring
-chunk. If the routers had not committed, the two would differ widely. Mean over seeds:
+chunk. If the routers had not committed, the two would differ widely. Mean over seeds, long
+budget:
 
 {{sampled}}
 
 ## During training
 
-Mean over seeds of validation loss on the first {{log-windows}} validation windows, to show
-whether the ordering at the end of the budget was still moving.
+Long budget: mean over seeds of validation loss on the first {{log-windows}} validation
+windows, to show whether the ordering at the end of the budget was still moving.
 
 {{during-training}}
 
-## Every run
+## How much picks vary by input
 
-{{runs}}
+Measured on the validation split with the picks inference makes. For each module, the share
+of tokens whose pick is not that module's most common pick says how much the pick depends on
+the input: 0 means the module always picks the same chunk, 0.75 is the most four chunks
+allow. The table gives the mean of that share over modules and seeds, its lowest value in any
+module of any seed, and the mean probability the router's softmax gives the chunk it picks
+(0.25 is indifference, 1 is certainty), at both budgets.
 
-## Per configuration
+{{pick-variation}}
 
-{{summary}}
-
-## Picks
-
-Measured on the validation split with the picks inference makes. The first column of numbers
-has one entry per module, first module to last: the share of tokens whose pick is not that
-module's most common pick (0 means the module always picks the same chunk, 0.75 is the most
-four chunks allow). The next has the mean probability the router's softmax gives the chunk it
-picks (0.25 is indifference, 1 is certainty). The usage columns pool all modules; evenness is
-the entropy of usage divided by its maximum (1 is even).
+The tables below are the long budget in full. The first column of numbers has one entry per
+module, first module to last: the share of tokens off that module's most common pick. The
+next has the router's mean probability for its pick. The usage columns pool all modules;
+evenness is the entropy of usage divided by its maximum (1 is even).
 
 ### Feed-forward routed
 
@@ -129,8 +170,32 @@ the entropy of usage divided by its maximum (1 is even).
 
 {{picks:both-routed}}
 
+## Per configuration
+
+Long budget:
+
+{{summary-long}}
+
+First budget:
+
+{{summary-first}}
+
+## Every run
+
+Both experiments and the learning-rate sweep, from the run files.
+
+{{runs}}
+
 ## Reproducing
 
-`nix-shell` gives the environment. `python -m weightbank.train <configuration> --seed <seed>`
-reproduces one run, `python -m weightbank.sweep` runs every run missing from `runs/`, and
-`python -m weightbank.report` rebuilds this file and the chart.
+`nix-shell` gives the environment. One command reproduces any run in the table above:
+
+```sh
+python -m weightbank.train <configuration> --seed <seed> --steps <steps> --rate <learning rate>
+```
+
+It writes `runs/<steps>/<configuration>-lr<learning rate>-s<seed>.json`.
+`python -m weightbank.sweep` trains every run of both experiments that `runs/` lacks (the
+first experiment, the learning-rate sweep, then the long runs at the rates the sweep chose;
+`--jobs N` trains N at once), and `python -m weightbank.report` rebuilds this file and the
+chart.

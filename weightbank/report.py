@@ -12,7 +12,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from weightbank.configs import CONFIGS, FULL, MODULES, NARROWER, NO_ROUTER, OWN_CHUNK, ROUTED, SEEDS, SHALLOWER, WIDTH
-from weightbank.train import LOG_WINDOWS, STEPS, PickStats, Run, run_path
+from weightbank.sweep import ARMS, FIRST_RATE, FIRST_STEPS, LONG_STEPS, SWEEP_SEED, SWEEP_STEPS, rate_sweep
+from weightbank.train import LOG_WINDOWS, RUNS, PickStats, Plan, Run
 
 TEMPLATE = Path("report.in.md")
 REPORT = Path("report.md")
@@ -40,6 +41,11 @@ class Summary:
         return stored
 
     @property
+    def rate(self) -> float:
+        (rate,) = {run.peak_rate for run in self.runs}
+        return rate
+
+    @property
     def losses(self) -> list[float]:
         return [run.validation_loss for run in self.runs]
 
@@ -52,15 +58,6 @@ class Summary:
         return stdev(self.losses)
 
 
-def summarise(name: str) -> Summary:
-    runs = [Run.read(run_path(name, seed)) for seed in SEEDS]
-    if {run.steps for run in runs} != {STEPS}:
-        raise ValueError(f"{name}: runs of {sorted({run.steps for run in runs})} steps, expected {STEPS}")
-    if not all(math.isfinite(run.validation_loss) for run in runs):
-        raise ValueError(f"{name}: a run ended with a loss that is not finite")
-    return Summary(name, runs)
-
-
 def interpolate(curve: Sequence[Summary], stored: int) -> float:
     for low, high in zip(curve, curve[1:]):
         if low.stored <= stored <= high.stored:
@@ -69,31 +66,81 @@ def interpolate(curve: Sequence[Summary], stored: int) -> float:
     raise ValueError(f"{stored} stored weights lie outside the plain curve")
 
 
+@dataclass
+class Budget:
+    steps: int
+    summaries: dict[str, Summary]
+
+    @property
+    def narrower(self) -> list[Summary]:
+        return [*(self.summaries[name] for name in NARROWER), self.summaries[FULL]]
+
+    @property
+    def shallower(self) -> list[Summary]:
+        return [*(self.summaries[name] for name in SHALLOWER), self.summaries[FULL]]
+
+    def gap(self, name: str) -> float:
+        summary = self.summaries[name]
+        plain = min(interpolate(curve, summary.stored) for curve in (self.narrower, self.shallower))
+        return summary.loss - plain
+
+
+def budget(steps: int, rates: dict[str, float], seeds: Sequence[int]) -> Budget:
+    summaries = {}
+    for name, rate in rates.items():
+        runs = [Plan(name, seed, steps, rate).read() for seed in seeds]
+        if not all(math.isfinite(run.validation_loss) for run in runs):
+            raise ValueError(f"{name}: a run ended with a loss that is not finite")
+        summaries[name] = Summary(name, runs)
+    return Budget(steps, summaries)
+
+
+def swept(name: str) -> dict[float, float]:
+    _, losses = rate_sweep(name)
+    if losses is None:
+        raise ValueError(f"{name}: the learning-rate sweep is not finished")
+    return losses
+
+
+def chosen(name: str) -> float:
+    losses = swept(name)
+    return min(losses, key=losses.__getitem__)
+
+
 def table(header: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
     lines = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
     lines += ["| " + " | ".join(row) + " |" for row in rows]
     return "\n".join(lines)
 
 
-def runs_table(summaries: dict[str, Summary]) -> str:
+def runs_table() -> str:
+    runs = sorted(
+        (Run.read(path) for path in RUNS.glob("*/*.json")),
+        key=lambda run: (run.steps, list(CONFIGS).index(run.config), run.peak_rate, run.seed),
+    )
     rows = [
         [
             run.config,
             str(run.seed),
+            f"{run.steps:,}",
+            f"{run.peak_rate:g}",
             f"{run.stored_weights:,}",
             f"{run.validation_loss:.4f}",
             f"{run.training_seconds:.0f}",
         ]
-        for summary in summaries.values()
-        for run in summary.runs
+        for run in runs
     ]
-    return table(["configuration", "seed", "stored weights", "final validation loss", "wall seconds (training)"], rows)
+    return table(
+        ["configuration", "seed", "steps", "learning rate", "stored weights", "final validation loss", "wall seconds (training)"],
+        rows,
+    )
 
 
 def summary_table(summaries: dict[str, Summary]) -> str:
     rows = [
         [
             summary.name,
+            f"{summary.rate:g}",
             f"{summary.stored:,}",
             f"{summary.loss:.4f}",
             f"{summary.spread:.4f}",
@@ -102,18 +149,89 @@ def summary_table(summaries: dict[str, Summary]) -> str:
         ]
         for summary in summaries.values()
     ]
-    return table(["configuration", "stored weights", "mean loss", "seed sd", "lowest", "highest"], rows)
+    return table(["configuration", "learning rate", "stored weights", "mean loss", "seed sd", "lowest", "highest"], rows)
 
 
-def gap_table(summaries: dict[str, Summary], narrower: Sequence[Summary], shallower: Sequence[Summary]) -> str:
+def sweep_table() -> str:
+    losses = {name: swept(name) for name in ARMS}
+    rates = sorted({rate for arm in losses.values() for rate in arm})
+    rows = []
+    for name, arm in losses.items():
+        best = chosen(name)
+        cells = ["" if rate not in arm else f"**{arm[rate]:.4f}**" if rate == best else f"{arm[rate]:.4f}" for rate in rates]
+        rows.append([name, *cells, f"{best:g}"])
+    return table(["configuration", *(f"{rate:g}" for rate in rates), "chosen"], rows)
+
+
+def both_budgets_table(first: Budget, tuned: Budget, long: Budget) -> str:
     rows = []
     for name in (*ROUTED, NO_ROUTER):
-        summary = summaries[name]
-        by_width = interpolate(narrower, summary.stored)
-        by_depth = interpolate(shallower, summary.stored)
         rows.append(
             [
                 name,
+                f"{long.summaries[name].stored:,}",
+                f"{first.summaries[name].rate:g}",
+                f"{first.gap(name):+.4f}",
+                f"{long.summaries[name].rate:g}",
+                f"{tuned.gap(name):+.4f}",
+                f"{long.gap(name):+.4f}",
+                f"{long.gap(name) - first.gap(name):+.4f}",
+            ]
+        )
+    return table(
+        [
+            "configuration",
+            "stored weights",
+            f"learning rate, {first.steps:,} steps",
+            f"gap, {first.steps:,} steps (3 seeds)",
+            "chosen learning rate",
+            f"gap, {tuned.steps:,} steps at the chosen rates (seed {SWEEP_SEED} only)",
+            f"gap, {long.steps:,} steps at the chosen rates (3 seeds)",
+            "long minus first",
+        ],
+        rows,
+    )
+
+
+def plain_table(first: Budget, long: Budget) -> str:
+    rows = [
+        [
+            name,
+            f"{long.summaries[name].stored:,}",
+            f"{first.summaries[name].loss:.4f}",
+            f"{first.summaries[name].spread:.4f}",
+            f"{long.summaries[name].rate:g}",
+            f"{long.summaries[name].loss:.4f}",
+            f"{long.summaries[name].spread:.4f}",
+            f"{long.summaries[name].loss - first.summaries[name].loss:+.4f}",
+        ]
+        for name in (*NARROWER, *SHALLOWER, FULL)
+    ]
+    return table(
+        [
+            "configuration",
+            "stored weights",
+            f"loss, {first.steps:,} steps at {FIRST_RATE:g}",
+            "seed sd",
+            "chosen learning rate",
+            f"loss, {long.steps:,} steps",
+            "seed sd",
+            "long minus first",
+        ],
+        rows,
+    )
+
+
+def gap_table(budget: Budget) -> str:
+    rows = []
+    for name in (*ROUTED, NO_ROUTER):
+        summary = budget.summaries[name]
+        by_width = interpolate(budget.narrower, summary.stored)
+        by_depth = interpolate(budget.shallower, summary.stored)
+        rows.append(
+            [
+                name,
+                f"{summary.rate:g}",
                 f"{summary.stored:,}",
                 f"{summary.loss:.4f}",
                 f"{summary.spread:.4f}",
@@ -121,12 +239,13 @@ def gap_table(summaries: dict[str, Summary], narrower: Sequence[Summary], shallo
                 f"{summary.loss - by_width:+.4f}",
                 f"{by_depth:.4f}",
                 f"{summary.loss - by_depth:+.4f}",
-                f"{summary.loss - min(by_width, by_depth):+.4f}",
+                f"{budget.gap(name):+.4f}",
             ]
         )
     return table(
         [
             "configuration",
+            "learning rate",
             "stored weights",
             "mean loss",
             "seed sd",
@@ -156,8 +275,9 @@ def logged(run: Run, step: int) -> float:
     return loss
 
 
-def during_training_table(summaries: dict[str, Summary]) -> str:
-    steps = [STEPS // 4, STEPS // 2, 3 * STEPS // 4, STEPS]
+def during_training_table(budget: Budget) -> str:
+    summaries = budget.summaries
+    steps = [budget.steps * part // 8 for part in range(1, 9)]
     rows = [
         [
             summary.name,
@@ -188,6 +308,36 @@ def shares(values: Sequence[float]) -> str:
     return " ".join(f"{value:.2f}" for value in values)
 
 
+def off_common(stats: PickStats) -> list[float]:
+    return [1 - max(row) / sum(row) for row in stats.counts]
+
+
+def pick_variation_table(first: Budget, long: Budget) -> str:
+    rows = []
+    for name in ROUTED:
+        for kind in ("feed_forward", "attention"):
+            cells = []
+            for budget in (first, long):
+                stats: list[PickStats] = [getattr(run, kind) for run in budget.summaries[name].runs]
+                if None in stats:
+                    break
+                cells += [
+                    f"{fmean(share for run in stats for share in off_common(run)):.2f}",
+                    f"{min(share for run in stats for share in off_common(run)):.2f}",
+                    f"{fmean(value for run in stats for value in run.confidence):.2f}",
+                ]
+            if cells:
+                rows.append([name, kind.replace("_", "-"), *cells])
+    header = ["configuration", "bank"]
+    for budget in (first, long):
+        header += [
+            f"off the common pick, mean, {budget.steps:,} steps",
+            f"lowest module, {budget.steps:,} steps",
+            f"router probability, {budget.steps:,} steps",
+        ]
+    return table(header, rows)
+
+
 def picks_table(summary: Summary) -> str:
     rows = []
     for kind in ("feed_forward", "attention"):
@@ -201,7 +351,7 @@ def picks_table(summary: Summary) -> str:
                 [
                     kind.replace("_", "-"),
                     str(run.seed),
-                    shares([1 - max(row) / sum(row) for row in stats.counts]),
+                    shares(off_common(stats)),
                     shares(stats.confidence),
                     shares(usage),
                     f"{entropy(usage):.2f}",
@@ -220,7 +370,8 @@ def picks_table(summary: Summary) -> str:
     )
 
 
-def chart(summaries: dict[str, Summary], narrower: Sequence[Summary], shallower: Sequence[Summary]) -> None:
+def chart(budget: Budget) -> None:
+    summaries, narrower, shallower = budget.summaries, budget.narrower, budget.shallower
     figure, axes = plt.subplots(figsize=(9, 5.6), dpi=160, facecolor=SURFACE)
     axes.set_facecolor(SURFACE)
     axes.set_xscale("log")
@@ -272,7 +423,7 @@ def chart(summaries: dict[str, Summary], narrower: Sequence[Summary], shallower:
     axes.set_xlabel("stored weights (millions, log scale)", color=MUTED)
     axes.set_ylabel("validation loss (nats per byte)", color=MUTED)
     axes.set_title(
-        f"Validation loss against stored weights, enwik8, {len(SEEDS)} seeds (bars and bands: lowest to highest)",
+        f"Validation loss against stored weights, enwik8, {budget.steps:,} steps, {len(SEEDS)} seeds (bars and bands: lowest to highest)",
         color=INK,
         fontsize=11,
         loc="left",
@@ -290,20 +441,28 @@ def chart(summaries: dict[str, Summary], narrower: Sequence[Summary], shallower:
 
 
 def main() -> None:
-    summaries = {name: summarise(name) for name in CONFIGS}
-    narrower = [*(summaries[name] for name in NARROWER), summaries[FULL]]
-    shallower = [*(summaries[name] for name in SHALLOWER), summaries[FULL]]
-    chart(summaries, narrower, shallower)
+    first = budget(FIRST_STEPS, {name: FIRST_RATE for name in CONFIGS}, SEEDS)
+    rates = {name: chosen(name) for name in ARMS}
+    tuned = budget(SWEEP_STEPS, rates, (SWEEP_SEED,))
+    long = budget(LONG_STEPS, rates, SEEDS)
+    chart(long)
     sections = {
-        "runs": runs_table(summaries),
-        "summary": summary_table(summaries),
-        "gaps": gap_table(summaries, narrower, shallower),
-        "sanity": paired_table(summaries, OWN_CHUNK, FULL),
-        "no-router": paired_table(summaries, "both-routed", NO_ROUTER),
-        "during-training": during_training_table(summaries),
-        "sampled": sampled_table(summaries),
+        "both-budgets": both_budgets_table(first, tuned, long),
+        "plain": plain_table(first, long),
+        "sweep": sweep_table(),
+        "gaps-long": gap_table(long),
+        "gaps-first": gap_table(first),
+        "sanity": paired_table(first.summaries, OWN_CHUNK, FULL),
+        "no-router-long": paired_table(long.summaries, "both-routed", NO_ROUTER),
+        "no-router-first": paired_table(first.summaries, "both-routed", NO_ROUTER),
+        "during-training": during_training_table(long),
+        "sampled": sampled_table(long.summaries),
         "log-windows": f"{LOG_WINDOWS:,}",
-        **{f"picks:{name}": picks_table(summaries[name]) for name in ROUTED},
+        "pick-variation": pick_variation_table(first, long),
+        "runs": runs_table(),
+        "summary-long": summary_table(long.summaries),
+        "summary-first": summary_table(first.summaries),
+        **{f"picks:{name}": picks_table(long.summaries[name]) for name in ROUTED},
     }
     text = TEMPLATE.read_text()
     for key, section in sections.items():

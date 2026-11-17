@@ -18,10 +18,8 @@ from weightbank.configs import CONFIGS
 from weightbank.model import CONTEXT, Picks, Transformer
 
 RUNS = Path("runs")
-STEPS = 8000
 BATCH = 64
 EVAL_BATCH = 256
-PEAK_RATE = 1e-3
 WARMUP = 200
 WEIGHT_DECAY = 0.1
 LOG_EVERY = 500
@@ -46,6 +44,7 @@ class Run:
     config: str
     seed: int
     steps: int
+    peak_rate: float
     stored_weights: int
     validation_loss: float
     sampled_picks_validation_loss: float
@@ -63,15 +62,41 @@ class Run:
         return Run(**fields)
 
 
-def run_path(config: str, seed: int) -> Path:
-    return RUNS / f"{config}-s{seed}.json"
+@dataclass(frozen=True)
+class Plan:
+    config: str
+    seed: int
+    steps: int
+    peak_rate: float
+
+    @property
+    def path(self) -> Path:
+        return RUNS / str(self.steps) / f"{self.config}-lr{self.peak_rate:g}-s{self.seed}.json"
+
+    @property
+    def command(self) -> list[str]:
+        return [
+            self.config,
+            "--seed",
+            str(self.seed),
+            "--steps",
+            str(self.steps),
+            "--rate",
+            f"{self.peak_rate:g}",
+        ]
+
+    def read(self) -> Run:
+        run = Run.read(self.path)
+        if Plan(run.config, run.seed, run.steps, run.peak_rate) != self:
+            raise ValueError(f"{self.path} holds a run of another plan")
+        return run
 
 
-def rate(step: int, steps: int) -> float:
+def rate(step: int, steps: int, peak: float) -> float:
     if step < WARMUP:
-        return PEAK_RATE * (step + 1) / WARMUP
+        return peak * (step + 1) / WARMUP
     progress = (step - WARMUP) / max(1, steps - WARMUP)
-    return PEAK_RATE * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * progress)))
+    return peak * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * progress)))
 
 
 class PickTally:
@@ -121,7 +146,8 @@ def evaluate(
     return Evaluation(total / tokens, feed_forward.stats(), attention.stats())
 
 
-def train(name: str, seed: int, steps: int) -> Run:
+def train(plan: Plan) -> Run:
+    name, seed, steps = plan.config, plan.seed, plan.steps
     device = torch.device("cuda")
     free, _ = torch.cuda.mem_get_info()
     print(f"{name} seed {seed}: {free / 2**20:.0f} MiB of GPU memory free", flush=True)
@@ -138,7 +164,7 @@ def train(name: str, seed: int, steps: int) -> Run:
             {"params": matrices, "weight_decay": WEIGHT_DECAY},
             {"params": vectors, "weight_decay": 0.0},
         ],
-        lr=PEAK_RATE,
+        lr=plan.peak_rate,
         betas=(0.9, 0.95),
     )
     scaler = GradScaler()
@@ -147,7 +173,7 @@ def train(name: str, seed: int, steps: int) -> Run:
     started = time.monotonic()
     for step in range(steps):
         for group in optimizer.param_groups:
-            group["lr"] = rate(step, steps)
+            group["lr"] = rate(step, steps, plan.peak_rate)
         inputs, targets = data.sample(corpus.train, BATCH, CONTEXT, generator)
         with torch.autocast(device.type, dtype=torch.float16):
             logits, _ = model(inputs)
@@ -182,6 +208,7 @@ def train(name: str, seed: int, steps: int) -> Run:
         config=name,
         seed=seed,
         steps=steps,
+        peak_rate=plan.peak_rate,
         stored_weights=stored,
         validation_loss=final.loss,
         sampled_picks_validation_loss=sampled.loss,
@@ -196,13 +223,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train one configuration at one seed.")
     parser.add_argument("config", choices=sorted(CONFIGS))
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--steps", type=int, default=8000)
+    parser.add_argument("--rate", type=float, default=1e-3, help="peak learning rate")
     arguments = parser.parse_args()
-    run = train(arguments.config, arguments.seed, STEPS)
-    path = run_path(arguments.config, arguments.seed)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    partial = path.with_suffix(".partial")
+    plan = Plan(arguments.config, arguments.seed, arguments.steps, arguments.rate)
+    run = train(plan)
+    plan.path.parent.mkdir(parents=True, exist_ok=True)
+    partial = plan.path.with_suffix(".partial")
     partial.write_text(json.dumps(asdict(run), indent=1) + "\n")
-    partial.replace(path)
+    partial.replace(plan.path)
 
 
 if __name__ == "__main__":
