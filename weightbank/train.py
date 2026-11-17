@@ -71,7 +71,7 @@ class Plan:
 
     @property
     def path(self) -> Path:
-        return RUNS / str(self.steps) / f"{self.config}-lr{self.peak_rate:g}-s{self.seed}.json"
+        return RUNS / str(self.steps) / f"{self.config}-lr{self.peak_rate!r}-s{self.seed}.json"
 
     @property
     def command(self) -> list[str]:
@@ -82,7 +82,7 @@ class Plan:
             "--steps",
             str(self.steps),
             "--rate",
-            f"{self.peak_rate:g}",
+            repr(self.peak_rate),
         ]
 
     def read(self) -> Run:
@@ -223,8 +223,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train one configuration at one seed.")
     parser.add_argument("config", choices=sorted(CONFIGS))
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--steps", type=int, default=8000)
-    parser.add_argument("--rate", type=float, default=1e-3, help="peak learning rate")
+    parser.add_argument("--steps", type=int, required=True)
+    parser.add_argument("--rate", type=float, required=True, help="peak learning rate")
     arguments = parser.parse_args()
     plan = Plan(arguments.config, arguments.seed, arguments.steps, arguments.rate)
     run = train(plan)

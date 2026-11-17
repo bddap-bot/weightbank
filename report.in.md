@@ -6,7 +6,8 @@ Loss is cross-entropy on the validation split in nats per byte (divide by 0.693 
 Two experiments are reported together. The first trained every configuration for 8,000 steps
 at one learning rate (1e-3), three seeds. The second asks which of the first's gaps belong to
 the designs and which to a short or mis-tuned comparison: every configuration gets a learning
-rate chosen for it from a sweep, then three seeds at four times the budget (32,000 steps).
+rate chosen for it from a sweep, then three seeds at four times the budget (32,000 steps);
+[what was cut](#what-was-cut) lists the two configurations left out.
 A gap is a configuration's mean validation loss minus the better of the two plain curves read
 at its stored weights; negative means the configuration beats a plain model of its size.
 
@@ -24,13 +25,21 @@ the question: both banks shared with no router, module i always using chunk i mo
 ## The gaps at both budgets
 
 Each plain curve is read at the configuration's stored weights by interpolating mean loss
-linearly in the logarithm of stored weights.
+linearly in the logarithm of stored weights. The gap is taken to whichever curve is lower
+there. Seeds share batches across configurations, so the gap is also computed seed by seed
+(the configuration at seed s against the plain curve of seed s); the range of those three is
+beside each mean.
 
 {{both-budgets}}
 
-The middle gap column separates the two changes: it is the first budget rerun at the chosen
-learning rates, one seed, so it moves with the rate alone, and the column after it adds the
-longer budget.
+Between the two budgets both the learning rate and the number of steps change. The next
+table changes the rate alone: the first budget, seed 0 only, with every configuration at 1e-3
+and then at its chosen rate. These are the sweep's own runs, so each loss in the right-hand
+gap is the lowest of the three or more that were tried, and a one-seed gap carries about a
+seed spread of noise (0.002 to 0.008 in the per-configuration table); it can show a shift of
+the size of the two large gaps and not of the two small ones.
+
+{{rate-alone}}
 
 The plain curves the gaps are read against, at both budgets:
 
@@ -60,11 +69,28 @@ tenth of the peak are the same at every rate and budget.
 {{sweep}}
 
 Limits of this choice: it is made on one seed, so where two rates differ by less than the seed
-spread in the tables below the pick between them is arbitrary; and it is made at 8,000 steps,
-on the assumption that the best peak rate does not move much when the cosine schedule is
-stretched to 32,000.
+spread the pick between them is arbitrary; and it is made at 8,000 steps, where a short
+schedule rewards a high peak rate, on the assumption that the best peak rate does not move
+much when the cosine schedule is stretched to 32,000.
 
-CUTS
+That assumption is tested where it matters most, on the two configurations that sat above
+the plain curve: one more long run each (seed 0, 32,000 steps) at half the chosen rate. If
+the lower rate were better at the long budget, these gaps would still hold a mis-tuned part.
+
+{{lower-rate}}
+
+## What was cut
+
+- `own-chunk`, the check that the routed code path with N = M reproduces the full control,
+  was not repeated. It tests the code, which did not change, and not a design.
+- `plain-w128` (1,684,992 stored weights) was left out of the sweep and the long runs. The
+  smallest configuration compared against the curve stores 3,360,512 weights, which lies
+  between `plain-w160` and `plain-w192`, so no gap reads the curve below `plain-w160`.
+- The lower-rate check at the long budget covers the two configurations above the plain
+  curve and not the plain models or the other two, to keep the experiment near a day of the
+  GPU.
+- Nothing else: every other configuration of the first experiment has its sweep and three
+  long seeds.
 
 ## Setup
 
@@ -96,8 +122,9 @@ CUTS
 - Private weights: each module keeps its own two layer norms (1,024 weights per module). No
   other per-module add-on. Stored weights count every parameter: bank chunks, routers and
   their module vectors, layer norms, embeddings and the output head.
-- Hardware: one RTX 2080, 8 GB, shared with other work, and in the second experiment with
-  other runs of the experiment itself (WALLNOTE), so wall times are indicative. During
+- Hardware: one RTX 2080, 8 GB, shared with other work, so wall times are indicative. Runs
+  were trained one at a time: one run saturates this GPU (three plain runs at once each took
+  three times as long). During
   training a routed step computes every chunk for every token (the straight-through gradient
   needs them), which is why routed runs take longer; a hard pick needs only the picked chunk
   at inference, which this code does not exploit. `own-chunk` and `both-no-router` pay a
@@ -196,6 +223,6 @@ python -m weightbank.train <configuration> --seed <seed> --steps <steps> --rate 
 
 It writes `runs/<steps>/<configuration>-lr<learning rate>-s<seed>.json`.
 `python -m weightbank.sweep` trains every run of both experiments that `runs/` lacks (the
-first experiment, the learning-rate sweep, then the long runs at the rates the sweep chose;
-`--jobs N` trains N at once), and `python -m weightbank.report` rebuilds this file and the
+first experiment, the learning-rate sweep, the long runs at the rates the sweep chose, then
+the lower-rate check), and `python -m weightbank.report` rebuilds this file and the
 chart.
