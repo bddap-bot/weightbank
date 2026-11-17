@@ -11,50 +11,85 @@ FIRST_STEPS = 8000
 FIRST_RATE = 1e-3
 LONG_STEPS = 4 * FIRST_STEPS
 RATE_GRID = (1.25e-4, 2.5e-4, 5e-4, 1e-3, 2e-3, 4e-3, 8e-3)
-FIRST_CANDIDATES = RATE_GRID[2:5]
+SHORT_RATES = RATE_GRID[2:5]
 SWEEP_SEED = 0
+STEEP = 0.005
 BELOW_EVERY_ARM = "plain-w128"
 ARMS = tuple(name for name in CONFIGS if name not in (OWN_CHUNK, BELOW_EVERY_ARM))
-LOWER_RATE_CHECK = ("attn-routed", "both-routed")
+
+Sweep = dict[float, float | None]
 
 
-def sweep_plan(config: str, rate: float) -> Plan:
+def read(plans: dict[float, Plan]) -> Sweep:
+    losses = {rate: plan.read().validation_loss if plan.path.exists() else None for rate, plan in sorted(plans.items())}
+    if not all(math.isfinite(loss) for loss in losses.values() if loss is not None):
+        raise ValueError(f"a sweep run of {next(iter(plans.values())).config} ended with a loss that is not finite")
+    return losses
+
+
+def finished(sweep: Sweep) -> dict[float, float] | None:
+    losses = {rate: loss for rate, loss in sweep.items() if loss is not None}
+    return losses if len(losses) == len(sweep) else None
+
+
+def lowest(losses: dict[float, float]) -> float:
+    return min(losses, key=losses.__getitem__)
+
+
+def short_plan(config: str, rate: float) -> Plan:
     return Plan(config, SWEEP_SEED, FIRST_STEPS, rate)
 
 
-def rate_sweep(config: str) -> dict[float, float | None]:
-    rates = list(FIRST_CANDIDATES)
+def long_plan(config: str, rate: float) -> Plan:
+    return Plan(config, SWEEP_SEED, LONG_STEPS, rate)
+
+
+def short_sweep(config: str) -> Sweep:
+    return read({rate: short_plan(config, rate) for rate in SHORT_RATES})
+
+
+def neighbours(rate: float) -> list[float]:
+    index = RATE_GRID.index(rate)
+    if index in (0, len(RATE_GRID) - 1):
+        raise ValueError(f"the rate grid ends at {rate:g}")
+    return [RATE_GRID[index - 1], RATE_GRID[index + 1]]
+
+
+def long_sweep(config: str) -> Sweep | None:
+    short = finished(short_sweep(config))
+    if short is None:
+        return None
+    best = lowest(short)
+    rates = [best, lowest({rate: short[rate] for rate in neighbours(best) if rate in short})]
     while True:
-        plans = {rate: sweep_plan(config, rate) for rate in sorted(rates)}
-        losses = {rate: plan.read().validation_loss if plan.path.exists() else None for rate, plan in plans.items()}
-        finished = {rate: loss for rate, loss in losses.items() if loss is not None}
-        if len(finished) < len(losses):
-            return losses
-        if not all(math.isfinite(loss) for loss in finished.values()):
-            raise ValueError(f"{config}: a sweep run ended with a loss that is not finite")
-        best = RATE_GRID.index(min(finished, key=finished.__getitem__))
-        if best in (0, len(RATE_GRID) - 1):
-            raise ValueError(f"{config}: the lowest loss is at the end of the rate grid, {RATE_GRID[best]:g}")
-        beyond = [RATE_GRID[index] for index in (best - 1, best + 1) if RATE_GRID[index] not in losses]
-        if not beyond:
-            return losses
-        rates += beyond
+        sweep = read({rate: long_plan(config, rate) for rate in rates})
+        losses = finished(sweep)
+        if losses is None:
+            return sweep
+        best = lowest(losses)
+        untried = [rate for rate in neighbours(best) if rate not in losses]
+        lead = min(loss for rate, loss in losses.items() if rate != best) - losses[best]
+        if not untried or lead <= STEEP:
+            return sweep
+        rates += untried
 
 
 def chosen(config: str) -> float | None:
-    losses = rate_sweep(config)
-    finished = {rate: loss for rate, loss in losses.items() if loss is not None}
-    if len(finished) < len(losses):
-        return None
-    return min(finished, key=finished.__getitem__)
+    sweep = long_sweep(config)
+    losses = None if sweep is None else finished(sweep)
+    return None if losses is None else lowest(losses)
 
 
 def first_runs() -> list[Plan]:
     return [Plan(config, seed, FIRST_STEPS, FIRST_RATE) for seed in SEEDS for config in CONFIGS]
 
 
-def sweep_runs() -> list[Plan]:
-    return [sweep_plan(config, rate) for config in ARMS for rate in rate_sweep(config)]
+def short_runs() -> list[Plan]:
+    return [short_plan(config, rate) for config in ARMS for rate in SHORT_RATES]
+
+
+def long_sweep_runs() -> list[Plan]:
+    return [long_plan(config, rate) for config in ARMS for rate in long_sweep(config) or ()]
 
 
 def long_runs() -> list[Plan]:
@@ -67,20 +102,8 @@ def long_runs() -> list[Plan]:
     ]
 
 
-def lower_rate_check(config: str) -> Plan | None:
-    rate = chosen(config)
-    return None if rate is None else Plan(config, SWEEP_SEED, LONG_STEPS, RATE_GRID[RATE_GRID.index(rate) - 1])
-
-
-def check_runs() -> list[Plan]:
-    long = long_runs()
-    if len(long) < len(ARMS) * len(SEEDS) or not all(plan.path.exists() for plan in long):
-        return []
-    return [plan for plan in map(lower_rate_check, LOWER_RATE_CHECK) if plan is not None]
-
-
 def planned() -> list[Plan]:
-    return list(dict.fromkeys([*first_runs(), *sweep_runs(), *long_runs(), *check_runs()]))
+    return list(dict.fromkeys([*first_runs(), *short_runs(), *long_sweep_runs(), *long_runs()]))
 
 
 def main() -> None:

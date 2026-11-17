@@ -12,7 +12,21 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from weightbank.configs import CONFIGS, FULL, MODULES, NARROWER, NO_ROUTER, OWN_CHUNK, ROUTED, SEEDS, SHALLOWER, WIDTH
-from weightbank.sweep import ARMS, LOWER_RATE_CHECK, FIRST_RATE, FIRST_STEPS, LONG_STEPS, SWEEP_SEED, chosen, lower_rate_check, planned, rate_sweep
+from weightbank.sweep import (
+    ARMS,
+    FIRST_RATE,
+    FIRST_STEPS,
+    LONG_STEPS,
+    SHORT_RATES,
+    SWEEP_SEED,
+    Sweep,
+    chosen,
+    finished,
+    long_sweep,
+    lowest,
+    planned,
+    short_sweep,
+)
 from weightbank.train import LOG_WINDOWS, PickStats, Plan, Run
 
 TEMPLATE = Path("report.in.md")
@@ -112,11 +126,11 @@ def read_budget(steps: int, rates: dict[str, float], seeds: Sequence[int]) -> Bu
     return Budget(steps, summaries)
 
 
-def chosen_rate(name: str) -> float:
-    rate = chosen(name)
-    if rate is None:
-        raise ValueError(f"{name}: the learning-rate sweep is not finished")
-    return rate
+def complete(name: str, sweep: Sweep | None) -> dict[float, float]:
+    losses = None if sweep is None else finished(sweep)
+    if losses is None:
+        raise ValueError(f"{name}: a learning-rate sweep is not finished")
+    return losses
 
 
 def table(header: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
@@ -160,15 +174,15 @@ def summary_table(summaries: dict[str, Summary]) -> str:
     return table(["configuration", "learning rate", "stored weights", "mean loss", "seed sd", "lowest", "highest"], rows)
 
 
-def sweep_table() -> str:
-    losses = {name: rate_sweep(name) for name in ARMS}
-    rates = sorted({rate for arm in losses.values() for rate in arm})
+def sweep_table(sweeps: dict[str, dict[float, float]]) -> str:
+    rates = sorted({rate for sweep in sweeps.values() for rate in sweep})
     rows = []
-    for name, arm in losses.items():
-        best = chosen_rate(name)
-        cells = ["" if rate not in arm else f"**{arm[rate]:.4f}**" if rate == best else f"{arm[rate]:.4f}" for rate in rates]
-        rows.append([name, *cells, f"{best:g}"])
-    return table(["configuration", *(f"{rate:g}" for rate in rates), "chosen"], rows)
+    for name, sweep in sweeps.items():
+        best = lowest(sweep)
+        cells = ["" if rate not in sweep else f"**{sweep[rate]:.4f}**" if rate == best else f"{sweep[rate]:.4f}" for rate in rates]
+        lead = min(loss for rate, loss in sweep.items() if rate != best) - sweep[best]
+        rows.append([name, *cells, f"{best:g}", f"{lead:.4f}"])
+    return table(["configuration", *(f"{rate:g}" for rate in rates), "lowest", "lead over the next"], rows)
 
 
 def span(values: Sequence[float]) -> str:
@@ -206,18 +220,18 @@ def both_budgets_table(first: Budget, long: Budget) -> str:
     )
 
 
-def rate_alone_table(first: Budget, at_first_rate: Budget, at_chosen_rates: Budget) -> str:
+def rate_alone_table(first: Budget, at_first_rate: Budget, at_best_rates: Budget) -> str:
     rows = []
     for name in (*ROUTED, NO_ROUTER):
         curve = first.better(name)
         (before,) = at_first_rate.gaps(name, curve)
-        (after,) = at_chosen_rates.gaps(name, curve)
+        (after,) = at_best_rates.gaps(name, curve)
         rows.append(
             [
                 name,
                 curve,
                 f"{before:+.4f}",
-                f"{at_chosen_rates.summaries[name].rate:g}",
+                f"{at_best_rates.summaries[name].rate:g}",
                 f"{after:+.4f}",
                 f"{after - before:+.4f}",
             ]
@@ -227,33 +241,10 @@ def rate_alone_table(first: Budget, at_first_rate: Budget, at_chosen_rates: Budg
             "configuration",
             "plain curve",
             f"gap at {FIRST_RATE:g} everywhere",
-            "chosen learning rate",
-            "gap at the chosen rates",
-            "chosen minus first",
+            "best short rate",
+            "gap at the best short rates",
+            "best minus first",
         ],
-        rows,
-    )
-
-
-def lower_rate_table(long: Budget) -> str:
-    rows = []
-    for name in LOWER_RATE_CHECK:
-        plan = lower_rate_check(name)
-        assert plan is not None
-        at_chosen = long.summaries[name].runs[SEEDS.index(SWEEP_SEED)].validation_loss
-        lower = plan.read().validation_loss
-        rows.append(
-            [
-                name,
-                f"{long.summaries[name].rate:g}",
-                f"{at_chosen:.4f}",
-                f"{plan.peak_rate:g}",
-                f"{lower:.4f}",
-                f"{lower - at_chosen:+.4f}",
-            ]
-        )
-    return table(
-        ["configuration", "chosen learning rate", "loss at the chosen rate", "lower rate", "loss at the lower rate", "lower minus chosen"],
         rows,
     )
 
@@ -509,19 +500,20 @@ def chart(budget: Budget) -> None:
 
 def main() -> None:
     first = read_budget(FIRST_STEPS, {name: FIRST_RATE for name in CONFIGS}, SEEDS)
-    rates = {name: chosen_rate(name) for name in ARMS}
-    long = read_budget(LONG_STEPS, rates, SEEDS)
+    short = {name: complete(name, short_sweep(name)) for name in ARMS}
+    long_sweeps = {name: complete(name, long_sweep(name)) for name in ARMS}
+    long = read_budget(LONG_STEPS, {name: lowest(sweep) for name, sweep in long_sweeps.items()}, SEEDS)
     chart(long)
     sections = {
         "both-budgets": both_budgets_table(first, long),
         "rate-alone": rate_alone_table(
             first,
             read_budget(FIRST_STEPS, {name: FIRST_RATE for name in ARMS}, (SWEEP_SEED,)),
-            read_budget(FIRST_STEPS, rates, (SWEEP_SEED,)),
+            read_budget(FIRST_STEPS, {name: lowest(sweep) for name, sweep in short.items()}, (SWEEP_SEED,)),
         ),
-        "lower-rate": lower_rate_table(long),
+        "short-sweep": sweep_table(short),
+        "long-sweep": sweep_table(long_sweeps),
         "plain": plain_table(first, long),
-        "sweep": sweep_table(),
         "gaps-long": gap_table(long),
         "gaps-first": gap_table(first),
         "sanity": paired_table(first.summaries, OWN_CHUNK, FULL),

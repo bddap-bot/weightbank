@@ -6,7 +6,7 @@ Loss is cross-entropy on the validation split in nats per byte (divide by 0.693 
 Two experiments are reported together. The first trained every configuration for 8,000 steps
 at one learning rate (1e-3), three seeds. The second asks which of the first's gaps belong to
 the designs and which to a short or mis-tuned comparison: every configuration gets a learning
-rate chosen for it from a sweep, then three seeds at four times the budget (32,000 steps);
+rate chosen for it by sweeps, then three seeds at four times the budget (32,000 steps);
 [what was cut](#what-was-cut) lists the two configurations left out.
 A gap is a configuration's mean validation loss minus the better of the two plain curves read
 at its stored weights; negative means the configuration beats a plain model of its size.
@@ -34,11 +34,11 @@ the range of those three is beside each mean.
 
 Between the two budgets both the learning rate and the number of steps change. The next
 table changes the rate alone: the first budget, seed 0 only, with every configuration at 1e-3
-and then at its chosen rate, both read against the plain curve the first-budget gap above
-uses. These are the sweep's own runs, so each loss in the right-hand gap is the lowest of the
-three or more that were tried, and a one-seed gap carries about a seed spread of noise (0.002
-to 0.008 in the per-configuration table); it can show a shift of the size of the two large
-gaps and not of the two small ones.
+and then at the best of the three rates tried for it at that budget (the short sweep below),
+both read against the plain curve the first-budget gap above uses. Each loss on the
+right-hand side is the lowest of three, and a one-seed gap carries about a seed spread of
+noise (0.002 to 0.008 in the per-configuration table); it can show a shift of the size of
+the two large gaps and not of the two small ones.
 
 {{rate-alone}}
 
@@ -60,25 +60,29 @@ routed model adds 38,536 weights (two routers and four more modules' layer norms
 
 ## Choosing the learning rate
 
-Each configuration was trained once (seed 0, 8,000 steps) at peak rates 5e-4, 1e-3 and 2e-3;
-the 1e-3 run is the first experiment's seed-0 run. When the lowest final validation loss fell
-on the edge of the rates tried, the next rate a factor of two beyond it was added, until the
-lowest loss had a tried rate on both sides. The rate with the lowest loss (bold) is the one
-the configuration's three long runs use. The warm-up (200 steps) and the cosine decay to a
-tenth of the peak are the same at every rate and budget.
+The rate is chosen in two stages, each one seed (seed 0), and the choice is made at the
+budget it is used at. The warm-up (200 steps) and the cosine decay to a tenth of the peak are
+the same at every rate and budget.
 
-{{sweep}}
+Short sweep: 8,000 steps at peak rates 5e-4, 1e-3 and 2e-3. The 1e-3 run is the first
+experiment's seed-0 run. Lowest loss in bold; the last column is how far the next-best rate
+is behind it.
 
-Limits of this choice: it is made on one seed, so where two rates differ by less than the seed
-spread the pick between them is arbitrary; and it is made at 8,000 steps, where a short
-schedule rewards a high peak rate, on the assumption that the best peak rate does not move
-much when the cosine schedule is stretched to 32,000.
+{{short-sweep}}
 
-That assumption is tested where it matters most, on the two configurations that sat above
-the plain curve: one more long run each (seed 0, 32,000 steps) at half the chosen rate. If
-the lower rate were better at the long budget, these gaps would still hold a mis-tuned part.
+SHORTNOTE
 
-{{lower-rate}}
+Long sweep: 32,000 steps at the best short rate and the better of its neighbours in the
+short sweep. The rate with the lower long loss is the configuration's rate, and its run is
+the configuration's seed-0 long run; seeds 1 and 2 are then trained at that rate. Where the
+winner led by more than 0.005 with no rate tried beyond it, the next rate a factor of two
+beyond was added, so that no configuration is left on a steep edge of its sweep.
+
+{{long-sweep}}
+
+Limits of this choice: it is made on one seed, so where two rates differ by less than the
+seed spread the pick between them is arbitrary; and a winner that leads by 0.005 or less is
+not bracketed on its far side, so a rate beyond it could be better by a similar amount.
 
 ## What was cut
 
@@ -87,9 +91,9 @@ the lower rate were better at the long budget, these gaps would still hold a mis
 - `plain-w128` (1,684,992 stored weights) was left out of the sweep and the long runs. The
   smallest configuration compared against the curve stores 3,360,512 weights, which lies
   between `plain-w160` and `plain-w192`, so no gap reads the curve below `plain-w160`.
-- The lower-rate check at the long budget covers the two configurations above the plain
-  curve and not the plain models or the other two, to keep the experiment near a day of the
-  GPU.
+- The long sweep has two rates per configuration, and a third only where the winner led by
+  more than 0.005. Three long rates for every configuration would have added about six
+  hours of the GPU to an experiment sized for a day.
 - Nothing else: every other configuration of the first experiment has its sweep and three
   long seeds.
 
@@ -224,6 +228,6 @@ python -m weightbank.train <configuration> --seed <seed> --steps <steps> --rate 
 
 It writes `runs/<steps>/<configuration>-lr<learning rate>-s<seed>.json`.
 `python -m weightbank.sweep` trains every run of both experiments that `runs/` lacks (the
-first experiment, the learning-rate sweep, the long runs at the rates the sweep chose, then
-the lower-rate check), and `python -m weightbank.report` rebuilds this file and the
+first experiment, the short sweep, the long sweep, then the remaining seeds at each
+configuration's rate), and `python -m weightbank.report` rebuilds this file and the
 chart.
