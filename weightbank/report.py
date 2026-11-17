@@ -1,19 +1,18 @@
 from __future__ import annotations
 
-import json
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from statistics import mean, stdev
+from statistics import fmean, stdev
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from weightbank.configs import CONFIGS, FULL, PINNED, PLAIN_DEPTHS, PLAIN_WIDTHS, ROUTED, SEEDS
-from weightbank.train import Run, run_path
+from weightbank.configs import CONFIGS, FULL, MODULES, NARROWER, NO_ROUTER, OWN_CHUNK, ROUTED, SEEDS, SHALLOWER, WIDTH
+from weightbank.train import LOG_WINDOWS, STEPS, PickStats, Run, run_path
 
 TEMPLATE = Path("report.in.md")
 REPORT = Path("report.md")
@@ -23,46 +22,50 @@ SURFACE = "#fcfcfb"
 INK = "#0b0b0b"
 MUTED = "#52514e"
 GRID = "#e4e3df"
-WIDTH_LINE = "#52514e"
-DEPTH_LINE = "#a3a29c"
-ROUTED_COLORS = {"ff-routed": "#2a78d6", "attn-routed": "#eb6834", "both-routed": "#1baf7a"}
-LABELS = {
-    "ff-routed": "feed-forward routed",
-    "attn-routed": "attention routed",
-    "both-routed": "both routed",
-}
+NARROWER_LINE = "#52514e"
+SHALLOWER_LINE = "#a3a29c"
+LABELS = {"ff-routed": "feed-forward routed", "attn-routed": "attention routed", "both-routed": "both routed"}
+COLORS = {"ff-routed": "#2a78d6", "attn-routed": "#eb6834", "both-routed": "#1baf7a"}
+assert LABELS.keys() == COLORS.keys() == ROUTED.keys()
 
 
 @dataclass
 class Summary:
     name: str
-    stored: int
-    losses: list[float]
+    runs: list[Run]
 
     @property
-    def mean(self) -> float:
-        return mean(self.losses)
+    def stored(self) -> int:
+        (stored,) = {run.stored_weights for run in self.runs}
+        return stored
+
+    @property
+    def losses(self) -> list[float]:
+        return [run.validation_loss for run in self.runs]
+
+    @property
+    def loss(self) -> float:
+        return fmean(self.losses)
 
     @property
     def spread(self) -> float:
         return stdev(self.losses)
 
 
-def load(name: str) -> list[Run]:
-    return [Run(**json.loads(run_path(name, seed).read_text())) for seed in SEEDS]
-
-
 def summarise(name: str) -> Summary:
-    runs = load(name)
-    (stored,) = {run.stored_weights for run in runs}
-    return Summary(name, stored, [run.validation_loss for run in runs])
+    runs = [Run.read(run_path(name, seed)) for seed in SEEDS]
+    if {run.steps for run in runs} != {STEPS}:
+        raise ValueError(f"{name}: runs of {sorted({run.steps for run in runs})} steps, expected {STEPS}")
+    if not all(math.isfinite(run.validation_loss) for run in runs):
+        raise ValueError(f"{name}: a run ended with a loss that is not finite")
+    return Summary(name, runs)
 
 
 def interpolate(curve: Sequence[Summary], stored: int) -> float:
     for low, high in zip(curve, curve[1:]):
         if low.stored <= stored <= high.stored:
             share = (math.log(stored) - math.log(low.stored)) / (math.log(high.stored) - math.log(low.stored))
-            return low.mean + share * (high.mean - low.mean)
+            return low.loss + share * (high.loss - low.loss)
     raise ValueError(f"{stored} stored weights lie outside the plain curve")
 
 
@@ -72,52 +75,53 @@ def table(header: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
     return "\n".join(lines)
 
 
-def runs_table() -> str:
+def runs_table(summaries: dict[str, Summary]) -> str:
     rows = [
         [
             run.config,
             str(run.seed),
             f"{run.stored_weights:,}",
             f"{run.validation_loss:.4f}",
-            f"{run.wall_seconds:.0f}",
+            f"{run.training_seconds:.0f}",
         ]
-        for name in CONFIGS
-        for run in load(name)
+        for summary in summaries.values()
+        for run in summary.runs
     ]
-    return table(["configuration", "seed", "stored weights", "validation loss", "wall seconds"], rows)
+    return table(["configuration", "seed", "stored weights", "final validation loss", "wall seconds (training)"], rows)
 
 
-def summary_table() -> str:
+def summary_table(summaries: dict[str, Summary]) -> str:
     rows = [
         [
             summary.name,
             f"{summary.stored:,}",
-            f"{summary.mean:.4f}",
+            f"{summary.loss:.4f}",
             f"{summary.spread:.4f}",
             f"{min(summary.losses):.4f}",
             f"{max(summary.losses):.4f}",
         ]
-        for summary in map(summarise, CONFIGS)
+        for summary in summaries.values()
     ]
-    return table(["configuration", "stored weights", "mean loss", "seed sd", "min", "max"], rows)
+    return table(["configuration", "stored weights", "mean loss", "seed sd", "lowest", "highest"], rows)
 
 
-def gap_table(width_curve: Sequence[Summary], depth_curve: Sequence[Summary]) -> str:
+def gap_table(summaries: dict[str, Summary], narrower: Sequence[Summary], shallower: Sequence[Summary]) -> str:
     rows = []
-    for name in ROUTED:
-        summary = summarise(name)
-        by_width = interpolate(width_curve, summary.stored)
-        by_depth = interpolate(depth_curve, summary.stored)
+    for name in (*ROUTED, NO_ROUTER):
+        summary = summaries[name]
+        by_width = interpolate(narrower, summary.stored)
+        by_depth = interpolate(shallower, summary.stored)
         rows.append(
             [
                 name,
                 f"{summary.stored:,}",
-                f"{summary.mean:.4f}",
+                f"{summary.loss:.4f}",
                 f"{summary.spread:.4f}",
                 f"{by_width:.4f}",
-                f"{summary.mean - by_width:+.4f}",
+                f"{summary.loss - by_width:+.4f}",
                 f"{by_depth:.4f}",
-                f"{summary.mean - by_depth:+.4f}",
+                f"{summary.loss - by_depth:+.4f}",
+                f"{summary.loss - min(by_width, by_depth):+.4f}",
             ]
         )
     return table(
@@ -126,70 +130,106 @@ def gap_table(width_curve: Sequence[Summary], depth_curve: Sequence[Summary]) ->
             "stored weights",
             "mean loss",
             "seed sd",
-            "narrower plain model at equal stored weights",
-            "routed minus narrower",
-            "shallower plain model at equal stored weights",
-            "routed minus shallower",
+            "narrower plain at equal stored weights",
+            "minus narrower",
+            "shallower plain at equal stored weights",
+            "minus shallower",
+            "minus the better plain",
         ],
         rows,
     )
 
 
-def sanity_table() -> str:
-    full = summarise(FULL)
-    pinned = summarise(PINNED)
+def paired_table(summaries: dict[str, Summary], name: str, against: str) -> str:
+    ours, theirs = summaries[name], summaries[against]
+    differences = [a - b for a, b in zip(ours.losses, theirs.losses)]
     rows = [
-        [summary.name, f"{summary.stored:,}", *(f"{loss:.4f}" for loss in summary.losses), f"{summary.mean:.4f}", f"{summary.spread:.4f}"]
-        for summary in (full, pinned)
+        [summary.name, f"{summary.stored:,}", *(f"{loss:.4f}" for loss in summary.losses), f"{summary.loss:.4f}", f"{summary.spread:.4f}"]
+        for summary in (theirs, ours)
     ]
-    header = ["configuration", "stored weights", *(f"seed {seed}" for seed in SEEDS), "mean", "seed sd"]
-    return table(header, rows) + f"\n\nDifference of means, pinned minus full: {pinned.mean - full.mean:+.4f} nats/byte."
+    rows.append([f"{name} minus {against}", "", *(f"{d:+.4f}" for d in differences), f"{fmean(differences):+.4f}", ""])
+    return table(["configuration", "stored weights", *(f"seed {seed}" for seed in SEEDS), "mean", "seed sd"], rows)
+
+
+def logged(run: Run, step: int) -> float:
+    (loss,) = [loss for at, loss in run.curve if at == step]
+    return loss
+
+
+def during_training_table(summaries: dict[str, Summary]) -> str:
+    steps = [STEPS // 4, STEPS // 2, 3 * STEPS // 4, STEPS]
+    rows = [
+        [
+            summary.name,
+            *(f"{fmean(logged(run, step) for run in summary.runs):.4f}" for step in steps),
+        ]
+        for summary in summaries.values()
+    ]
+    return table(["configuration", *(f"step {step:,}" for step in steps)], rows)
+
+
+def sampled_table(summaries: dict[str, Summary]) -> str:
+    rows = [
+        [
+            name,
+            f"{summaries[name].loss:.4f}",
+            f"{fmean(run.sampled_picks_validation_loss for run in summaries[name].runs):.4f}",
+        ]
+        for name in ROUTED
+    ]
+    return table(["configuration", "highest-scoring picks (reported)", "picks sampled as in training"], rows)
 
 
 def entropy(shares: Sequence[float]) -> float:
     return -sum(share * math.log(share) for share in shares if share > 0) / math.log(len(shares))
 
 
-def picks_table(name: str) -> str:
+def shares(values: Sequence[float]) -> str:
+    return " ".join(f"{value:.2f}" for value in values)
+
+
+def picks_table(summary: Summary) -> str:
     rows = []
-    for kind, attribute in (("feed-forward", "feed_forward_picks"), ("attention", "attention_picks")):
-        for run in load(name):
-            counts: list[list[int]] = getattr(run, attribute)
-            if not counts:
+    for kind in ("feed_forward", "attention"):
+        for run in summary.runs:
+            stats: PickStats | None = getattr(run, kind)
+            if stats is None:
                 continue
-            varied = [1 - max(row) / sum(row) for row in counts]
-            total = sum(map(sum, counts))
-            usage = [sum(row[chunk] for row in counts) / total for chunk in range(len(counts[0]))]
+            total = sum(map(sum, stats.counts))
+            usage = [sum(row[chunk] for row in stats.counts) / total for chunk in range(len(stats.counts[0]))]
             rows.append(
                 [
-                    kind,
+                    kind.replace("_", "-"),
                     str(run.seed),
-                    " ".join(f"{share:.3f}" for share in varied),
-                    " ".join(f"{share:.3f}" for share in usage),
-                    f"{entropy(usage):.3f}",
+                    shares([1 - max(row) / sum(row) for row in stats.counts]),
+                    shares(stats.confidence),
+                    shares(usage),
+                    f"{entropy(usage):.2f}",
                 ]
             )
     return table(
         [
             "bank",
             "seed",
-            "per module, share of tokens off the module's most common pick",
-            "share of all picks per chunk",
-            "usage entropy (1 = even)",
+            "share of tokens off the module's most common pick, per module",
+            "router's mean probability for its pick, per module",
+            "share of all picks, per chunk",
+            "usage evenness",
         ],
         rows,
     )
 
 
-def chart(width_curve: Sequence[Summary], depth_curve: Sequence[Summary]) -> None:
+def chart(summaries: dict[str, Summary], narrower: Sequence[Summary], shallower: Sequence[Summary]) -> None:
     figure, axes = plt.subplots(figsize=(9, 5.6), dpi=160, facecolor=SURFACE)
     axes.set_facecolor(SURFACE)
+    axes.set_xscale("log")
     for curve, color, label in (
-        (width_curve, WIDTH_LINE, "plain, narrower (8 modules)"),
-        (depth_curve, DEPTH_LINE, "plain, shallower (width 256)"),
+        (narrower, NARROWER_LINE, f"plain, narrower ({MODULES} modules)"),
+        (shallower, SHALLOWER_LINE, f"plain, fewer modules (width {WIDTH})"),
     ):
         stored = [summary.stored / 1e6 for summary in curve]
-        axes.plot(stored, [summary.mean for summary in curve], color=color, linewidth=2, marker="o", markersize=5, label=label, zorder=2)
+        axes.plot(stored, [summary.loss for summary in curve], color=color, linewidth=2, marker="o", markersize=5, label=label, zorder=2)
         axes.fill_between(
             stored,
             [min(summary.losses) for summary in curve],
@@ -199,31 +239,44 @@ def chart(width_curve: Sequence[Summary], depth_curve: Sequence[Summary]) -> Non
             linewidth=0,
             zorder=1,
         )
-    for name in ROUTED:
-        summary = summarise(name)
-        color = ROUTED_COLORS[name]
+    points = [(name, COLORS[name], COLORS[name], LABELS[name], "D") for name in ROUTED]
+    points.append((NO_ROUTER, INK, SURFACE, "both shared, no router", "s"))
+    label_offsets = {"ff-routed": (0, -26), "attn-routed": (0, 14), NO_ROUTER: (-12, -4)}
+    for name, color, fill, label, marker in points:
+        summary = summaries[name]
         x = summary.stored / 1e6
         axes.errorbar(
             [x],
-            [summary.mean],
-            yerr=[[summary.mean - min(summary.losses)], [max(summary.losses) - summary.mean]],
+            [summary.loss],
+            yerr=[[summary.loss - min(summary.losses)], [max(summary.losses) - summary.loss]],
             color=color,
-            marker="D",
-            markersize=9,
-            markeredgecolor=SURFACE,
+            marker=marker,
+            markersize=7,
+            markerfacecolor=fill,
+            markeredgecolor=SURFACE if fill == color else color,
             markeredgewidth=2,
-            capsize=5,
+            capsize=6,
             linewidth=2,
             linestyle="none",
-            label=LABELS[name],
             zorder=4,
         )
-        axes.annotate(LABELS[name], (x, summary.mean), xytext=(10, 8), textcoords="offset points", color=INK, fontsize=10)
-    full = width_curve[-1]
-    axes.annotate("full control", (full.stored / 1e6, full.mean), xytext=(-8, -16), textcoords="offset points", color=MUTED, fontsize=10, ha="right")
-    axes.set_xlabel("stored weights (millions)", color=MUTED)
+        offset = label_offsets.get(name, (10, 8))
+        side = "right" if offset[0] < 0 else "center" if offset[0] == 0 else "left"
+        axes.annotate(label, (x, summary.loss), xytext=offset, textcoords="offset points", color=INK, fontsize=10, ha=side)
+    full = summaries[FULL]
+    axes.annotate("full control", (full.stored / 1e6, full.loss), xytext=(-8, -16), textcoords="offset points", color=MUTED, fontsize=10, ha="right")
+    ticks = [2, 3, 4, 5, 6]
+    axes.set_xticks(ticks, [str(tick) for tick in ticks])
+    axes.set_xticks([], minor=True)
+    axes.set_xlim(1.5, 7.2)
+    axes.set_xlabel("stored weights (millions, log scale)", color=MUTED)
     axes.set_ylabel("validation loss (nats per byte)", color=MUTED)
-    axes.set_title("Validation loss against stored weights, enwik8, 3 seeds (bars and bands: min to max)", color=INK, fontsize=11, loc="left")
+    axes.set_title(
+        f"Validation loss against stored weights, enwik8, {len(SEEDS)} seeds (bars and bands: lowest to highest)",
+        color=INK,
+        fontsize=11,
+        loc="left",
+    )
     axes.grid(color=GRID, linewidth=1)
     axes.set_axisbelow(True)
     axes.tick_params(colors=MUTED)
@@ -237,20 +290,26 @@ def chart(width_curve: Sequence[Summary], depth_curve: Sequence[Summary]) -> Non
 
 
 def main() -> None:
-    full = summarise(FULL)
-    width_curve = [*(summarise(f"plain-w{width}") for width in PLAIN_WIDTHS), full]
-    depth_curve = [*(summarise(f"plain-l{depth}") for depth in PLAIN_DEPTHS), full]
-    chart(width_curve, depth_curve)
+    summaries = {name: summarise(name) for name in CONFIGS}
+    narrower = [*(summaries[name] for name in NARROWER), summaries[FULL]]
+    shallower = [*(summaries[name] for name in SHALLOWER), summaries[FULL]]
+    chart(summaries, narrower, shallower)
     sections = {
-        "runs": runs_table(),
-        "summary": summary_table(),
-        "gaps": gap_table(width_curve, depth_curve),
-        "sanity": sanity_table(),
-        **{f"picks:{name}": picks_table(name) for name in ROUTED},
+        "runs": runs_table(summaries),
+        "summary": summary_table(summaries),
+        "gaps": gap_table(summaries, narrower, shallower),
+        "sanity": paired_table(summaries, OWN_CHUNK, FULL),
+        "no-router": paired_table(summaries, "both-routed", NO_ROUTER),
+        "during-training": during_training_table(summaries),
+        "sampled": sampled_table(summaries),
+        "log-windows": f"{LOG_WINDOWS:,}",
+        **{f"picks:{name}": picks_table(summaries[name]) for name in ROUTED},
     }
     text = TEMPLATE.read_text()
     for key, section in sections.items():
         text = text.replace("{{" + key + "}}", section)
+    if "{{" in text:
+        raise ValueError(f"{TEMPLATE} names a section this report does not write")
     REPORT.write_text(text)
     print(text)
 
