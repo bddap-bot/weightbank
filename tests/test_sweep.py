@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from dataclasses import asdict
 from pathlib import Path
 
 import pytest
 
-from weightbank import train
+from weightbank import sweep, train
 from weightbank.configs import CONFIGS, SEEDS
 from weightbank.sweep import (
     LONG_STEPS,
@@ -128,37 +129,76 @@ def test_the_lower_long_loss_is_chosen_and_the_other_seeds_follow_it() -> None:
     assert chosen(ARM) == 2e-3
     assert long_runs() == [Plan(ARM, seed, 32000, 2e-3) for seed in SEEDS]
     assert set(long_runs()) <= set(planned())
-    long(ARM, {1e-3: 0.996})
-    assert chosen(ARM) == 1e-3
+    assert len(planned()) == len(set(planned()))
 
 
-def test_a_steep_lead_on_the_edge_adds_the_rate_beyond_it() -> None:
+def test_a_lead_of_the_steep_margin_or_less_on_the_short_best_ends_the_sweep() -> None:
+    short(ARM, {5e-4: 1.3, 1e-3: 1.2, 2e-3: 1.1})
+    long(ARM, {1e-3: 1.005, 2e-3: 1.0})
+    assert chosen(ARM) == 2e-3
+
+
+def test_a_steep_lead_on_the_short_best_adds_the_rate_beyond_it() -> None:
     short(ARM, {5e-4: 1.3, 1e-3: 1.2, 2e-3: 1.1})
     long(ARM, {1e-3: 1.006, 2e-3: 1.0})
     assert long_sweep(ARM) == {1e-3: 1.006, 2e-3: 1.0, 4e-3: None}
-    assert chosen(ARM) is None
-    long(ARM, {4e-3: 0.99})
-    assert long_sweep(ARM) == {1e-3: 1.006, 2e-3: 1.0, 4e-3: 0.99, 8e-3: None}
-    long(ARM, {4e-3: 0.999})
+    assert chosen(ARM) is None and long_runs() == []
+    assert long_plan(ARM, 4e-3) in planned()
+    long(ARM, {4e-3: 1.2})
+    assert chosen(ARM) == 2e-3
+
+
+def test_a_winner_that_is_not_the_short_best_is_followed_until_bracketed() -> None:
+    short(ARM, {5e-4: 1.3, 1e-3: 1.2, 2e-3: 1.1})
+    long(ARM, {1e-3: 1.0, 2e-3: 1.001})
+    assert long_sweep(ARM) == {5e-4: None, 1e-3: 1.0, 2e-3: 1.001}
+    long(ARM, {5e-4: 0.999})
+    assert long_sweep(ARM) == {2.5e-4: None, 5e-4: 0.999, 1e-3: 1.0, 2e-3: 1.001}
+    long(ARM, {2.5e-4: 1.1})
+    assert chosen(ARM) == 5e-4
+
+
+def test_a_winner_past_the_short_best_is_followed_until_bracketed() -> None:
+    short(ARM, {5e-4: 1.3, 1e-3: 1.2, 2e-3: 1.1})
+    long(ARM, {1e-3: 1.1, 2e-3: 1.0, 4e-3: 0.999})
+    assert long_sweep(ARM) == {1e-3: 1.1, 2e-3: 1.0, 4e-3: 0.999, 8e-3: None}
+    long(ARM, {8e-3: float("inf")})
     assert chosen(ARM) == 4e-3
 
 
-def test_a_steep_lead_on_the_low_edge_adds_a_lower_rate() -> None:
-    short(ARM, {5e-4: 1.3, 1e-3: 1.2, 2e-3: 1.1})
-    long(ARM, {1e-3: 1.0, 2e-3: 1.006})
-    assert long_sweep(ARM) == {5e-4: None, 1e-3: 1.0, 2e-3: 1.006}
-    long(ARM, {5e-4: 1.1})
-    assert chosen(ARM) == 1e-3
-
-
-def test_a_steep_lead_at_the_end_of_the_grid_is_refused() -> None:
+def test_a_winner_at_the_end_of_the_grid_cannot_be_bracketed() -> None:
     short(ARM, {5e-4: 1.3, 1e-3: 1.2, 2e-3: 1.1})
     long(ARM, {1e-3: 1.3, 2e-3: 1.2, 4e-3: 1.1, 8e-3: 1.0})
     with pytest.raises(ValueError):
         long_sweep(ARM)
 
 
-def test_a_sweep_loss_that_is_not_finite_is_refused() -> None:
-    short(ARM, {5e-4: 1.2, 1e-3: float("nan"), 2e-3: 1.15})
+def test_a_diverged_run_loses_and_a_loss_that_is_not_a_number_is_refused() -> None:
+    short(ARM, {5e-4: 1.2, 1e-3: 1.1, 2e-3: float("inf")})
+    assert long_sweep(ARM) == {5e-4: None, 1e-3: None}
+    short(ARM, {2e-3: float("nan")})
     with pytest.raises(ValueError):
         short_sweep(ARM)
+
+
+def test_the_driver_trains_one_missing_run_at_a_time_in_plan_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    trained: list[Plan] = []
+
+    def fake(command: list[str], check: bool) -> None:
+        plan = Plan(command[3], int(command[5]), int(command[7]), float(command[9]))
+        trained.append(plan)
+        record(plan, 1.0 + plan.peak_rate + (plan.steps == 8000))
+
+    monkeypatch.setattr(subprocess, "run", fake)
+    monkeypatch.setattr(sweep, "ARMS", (ARM,))
+    monkeypatch.setattr(sweep, "CONFIGS", {ARM: CONFIGS[ARM]})
+    sweep.main()
+    assert trained == [
+        *(Plan(ARM, seed, 8000, 1e-3) for seed in SEEDS),
+        Plan(ARM, 0, 8000, 5e-4),
+        Plan(ARM, 0, 8000, 2e-3),
+        Plan(ARM, 0, 32000, 5e-4),
+        Plan(ARM, 0, 32000, 1e-3),
+        Plan(ARM, 1, 32000, 5e-4),
+        Plan(ARM, 2, 32000, 5e-4),
+    ]

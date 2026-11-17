@@ -17,10 +17,8 @@ from weightbank.sweep import (
     FIRST_RATE,
     FIRST_STEPS,
     LONG_STEPS,
-    SHORT_RATES,
     SWEEP_SEED,
     Sweep,
-    chosen,
     finished,
     long_sweep,
     lowest,
@@ -200,6 +198,7 @@ def both_budgets_table(first: Budget, long: Budget) -> str:
             f"{long.summaries[name].rate:g}",
             f"{long.gap(name):+.4f}",
             span(long.gaps(name, long.better(name))),
+            f"{fmean(gap for seed, gap in zip(SEEDS, long.gaps(name, long.better(name))) if seed != SWEEP_SEED):+.4f}",
             f"{long.gap(name) - first.gap(name):+.4f}",
         ]
         for name in (*ROUTED, NO_ROUTER)
@@ -214,6 +213,7 @@ def both_budgets_table(first: Budget, long: Budget) -> str:
             f"learning rate, {long.steps:,} steps",
             f"gap, {long.steps:,} steps",
             "lowest to highest seed",
+            f"gap without seed {SWEEP_SEED}",
             "long minus first",
         ],
         rows,

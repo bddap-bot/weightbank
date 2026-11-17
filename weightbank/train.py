@@ -186,7 +186,8 @@ def train(plan: Plan) -> Run:
         scaler.update()
         if (step + 1) % LOG_EVERY == 0:
             if not math.isfinite(loss.item()):
-                raise RuntimeError(f"training loss {loss.item()} at step {step + 1}")
+                print(f"training loss {loss.item()} at step {step + 1}: diverged", flush=True)
+                return Run(name, seed, steps, plan.peak_rate, stored, math.inf, math.inf, seconds, None, None, curve)
             seconds += time.monotonic() - started
             validation = evaluate(model, corpus.validation, windows=LOG_WINDOWS).loss
             curve.append([step + 1, validation])

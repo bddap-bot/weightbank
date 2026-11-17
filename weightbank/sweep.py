@@ -22,8 +22,8 @@ Sweep = dict[float, float | None]
 
 def read(plans: dict[float, Plan]) -> Sweep:
     losses = {rate: plan.read().validation_loss if plan.path.exists() else None for rate, plan in sorted(plans.items())}
-    if not all(math.isfinite(loss) for loss in losses.values() if loss is not None):
-        raise ValueError(f"a sweep run of {next(iter(plans.values())).config} ended with a loss that is not finite")
+    if any(loss is not None and math.isnan(loss) for loss in losses.values()):
+        raise ValueError(f"a sweep run of {next(iter(plans.values())).config} ended with a loss that is not a number")
     return losses
 
 
@@ -59,19 +59,19 @@ def long_sweep(config: str) -> Sweep | None:
     short = finished(short_sweep(config))
     if short is None:
         return None
-    best = lowest(short)
-    rates = [best, lowest({rate: short[rate] for rate in neighbours(best) if rate in short})]
+    short_best = lowest(short)
+    rates = [short_best, lowest({rate: short[rate] for rate in neighbours(short_best) if rate in short})]
     while True:
         sweep = read({rate: long_plan(config, rate) for rate in rates})
         losses = finished(sweep)
         if losses is None:
             return sweep
         best = lowest(losses)
-        untried = [rate for rate in neighbours(best) if rate not in losses]
         lead = min(loss for rate, loss in losses.items() if rate != best) - losses[best]
-        if not untried or lead <= STEEP:
+        if best in (min(losses), max(losses)) and (best != short_best or lead > STEEP):
+            rates += [rate for rate in neighbours(best) if rate not in losses]
+        else:
             return sweep
-        rates += untried
 
 
 def chosen(config: str) -> float | None:
@@ -108,8 +108,7 @@ def planned() -> list[Plan]:
 
 def main() -> None:
     while missing := [plan for plan in planned() if not plan.path.exists()]:
-        for plan in missing:
-            subprocess.run([sys.executable, "-m", "weightbank.train", *plan.command], check=True)
+        subprocess.run([sys.executable, "-m", "weightbank.train", *missing[0].command], check=True)
 
 
 if __name__ == "__main__":

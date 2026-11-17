@@ -28,7 +28,9 @@ Each plain curve is read at the configuration's stored weights by interpolating 
 linearly in the logarithm of stored weights, and the gap is taken to whichever curve is lower
 there. Seeds share batches across configurations, so the gap is also computed seed by seed
 (the configuration at seed s against that same curve drawn from the plain runs of seed s);
-the range of those three is beside each mean.
+the range of those three is beside each mean. At the long budget seed 0 is also the seed the
+learning rates were chosen on, so each seed-0 loss is the lowest of the rates tried; the
+column without seed 0 is the gap over the two seeds that took no part in the choice.
 
 {{both-budgets}}
 
@@ -73,16 +75,20 @@ is behind it.
 SHORTNOTE
 
 Long sweep: 32,000 steps at the best short rate and the better of its neighbours in the
-short sweep. The rate with the lower long loss is the configuration's rate, and its run is
-the configuration's seed-0 long run; seeds 1 and 2 are then trained at that rate. Where the
-winner led by more than 0.005 with no rate tried beyond it, the next rate a factor of two
-beyond was added, so that no configuration is left on a steep edge of its sweep.
+short sweep. The rate with the lowest long loss is the configuration's rate, and its run is
+the configuration's seed-0 long run; seeds 1 and 2 are then trained at that rate. A winner on
+the edge of the rates tried gets the next rate a factor of two beyond it added, and the rule
+is applied again, in two cases: when the winner is not the best short rate (the long budget
+moved the optimum, so that side is followed until a tried rate lies beyond the winner), and
+when it leads the next-best rate by more than 0.005. A run whose training loss stops being
+finite is recorded with an infinite loss and loses.
 
 {{long-sweep}}
 
 Limits of this choice: it is made on one seed, so where two rates differ by less than the
-seed spread the pick between them is arbitrary; and a winner that leads by 0.005 or less is
-not bracketed on its far side, so a rate beyond it could be better by a similar amount.
+seed spread the pick between them is arbitrary; and a winner that is the best short rate
+and leads by 0.005 or less has no rate tried beyond it, so a rate beyond it could be better
+by a similar amount. The two small gaps of the first experiment are of that size.
 
 ## What was cut
 
@@ -91,9 +97,9 @@ not bracketed on its far side, so a rate beyond it could be better by a similar 
 - `plain-w128` (1,684,992 stored weights) was left out of the sweep and the long runs. The
   smallest configuration compared against the curve stores 3,360,512 weights, which lies
   between `plain-w160` and `plain-w192`, so no gap reads the curve below `plain-w160`.
-- The long sweep has two rates per configuration, and a third only where the winner led by
-  more than 0.005. Three long rates for every configuration would have added about six
-  hours of the GPU to an experiment sized for a day.
+- The long sweep starts from two rates per configuration and adds more only under the rule
+  above. Three long rates for every configuration would have added about six hours of the
+  GPU to an experiment sized for a day.
 - Nothing else: every other configuration of the first experiment has its sweep and three
   long seeds.
 
