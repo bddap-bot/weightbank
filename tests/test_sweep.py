@@ -26,7 +26,7 @@ from weightbank.sweep import (
 from weightbank.train import Plan, Run
 
 ARM = "ff-routed"
-SWEPT = tuple(CONFIGS)
+SWEPT = tuple(name for name in CONFIGS if name != "own-chunk")
 
 
 @pytest.fixture(autouse=True)
@@ -90,7 +90,7 @@ def test_the_first_experiment_is_every_configuration_at_one_rate() -> None:
     assert first_runs() == [Plan(config, seed, 8000, 1e-3) for seed in SEEDS for config in CONFIGS]
 
 
-def test_every_configuration_is_swept() -> None:
+def test_every_configuration_but_the_code_check_is_swept() -> None:
     assert short_runs() == [short_plan(config, rate) for config in SWEPT for rate in (5e-4, 1e-3, 2e-3)]
     assert set(short_runs()) <= set(planned())
 
@@ -202,3 +202,11 @@ def test_the_driver_trains_one_missing_run_at_a_time_in_plan_order(monkeypatch: 
         Plan(ARM, 1, 32000, 5e-4),
         Plan(ARM, 2, 32000, 5e-4),
     ]
+
+
+def test_the_code_check_trains_at_the_rate_of_the_model_it_must_reproduce() -> None:
+    short("full", {5e-4: 1.3, 1e-3: 1.2, 2e-3: 1.1})
+    assert chosen("own-chunk") is None
+    long("full", {1e-3: 1.004, 2e-3: 1.0})
+    assert chosen("own-chunk") == chosen("full") == 2e-3
+    assert long_runs() == [Plan(config, seed, 32000, 2e-3) for seed in SEEDS for config in ("full", "own-chunk")]

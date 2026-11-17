@@ -11,6 +11,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
+from matplotlib.transforms import ScaledTranslation
 
 from weightbank.configs import (
     CONFIGS,
@@ -33,6 +34,7 @@ from weightbank.sweep import (
     FIRST_RATE,
     FIRST_STEPS,
     LONG_STEPS,
+    RATE_FROM,
     SWEEP_SEED,
     Sweep,
     finished,
@@ -70,6 +72,7 @@ COLORS = {
     NOISE_FREE: "#8a5cd6",
     KEYS: "#c9477b",
 }
+DODGE = {NO_ROUTER: -9, "both-routed": 0, NOISE_FREE: 9, KEYS: 18}
 MARKERS = {"ff-routed": "D", "attn-routed": "D", "both-routed": "D", NOISE_FREE: "^", KEYS: "v"}
 assert LABELS.keys() == COLORS.keys() == MARKERS.keys() == set(PICKING)
 
@@ -140,8 +143,10 @@ class Budget:
 
     def better(self, name: str) -> str:
         stored = self.summaries[name].stored
-        reads = {curve: self.read(curve, stored) for curve in self.curves()}
-        return min((curve for curve, loss in reads.items() if loss is not None), key=lambda curve: reads[curve] or 0.0)
+        reads = {curve: loss for curve in self.curves() if (loss := self.read(curve, stored)) is not None}
+        if not reads:
+            raise ValueError(f"{name}: no plain curve reaches {stored} stored weights")
+        return min(reads, key=reads.__getitem__)
 
     def gaps(self, name: str, curve: str) -> list[float]:
         summary = self.summaries[name]
@@ -263,6 +268,8 @@ def both_budgets_table(first: Budget, long: Budget) -> str:
 def rate_alone_table(first: Budget, at_first_rate: Budget, at_best_rates: Budget) -> str:
     rows = []
     for name in COMPARED:
+        if name not in at_best_rates.summaries:
+            continue
         curve = first.better(name)
         (before,) = at_first_rate.gaps(name, curve)
         (after,) = at_best_rates.gaps(name, curve)
@@ -412,6 +419,7 @@ def fixed_map_table(first: Budget, long: Budget) -> str:
                 f"{ours.loss - theirs.loss:+.4f}",
                 span([a - b for a, b in zip(ours.losses, theirs.losses)]),
                 f"{budget.gap(name):+.4f}",
+                budget.better(name),
             ]
         rows.append(cells)
     header = ["chunks", "configuration", "stored weights", "plain partner"]
@@ -422,6 +430,7 @@ def fixed_map_table(first: Budget, long: Budget) -> str:
             "minus partner",
             "lowest to highest seed",
             "gap to the plain curve",
+            "curve",
         ]
     return table(header, rows)
 
@@ -572,6 +581,7 @@ def panel(axes: Axes, budget: Budget, low: float, high: float, annotate: bool) -
     ]
     points += [(summaries[name], COLORS[name], COLORS[name], MARKERS[name], LABELS[name]) for name in PICKING]
     for summary, color, fill, marker, legend in points:
+        dodge = ScaledTranslation(DODGE.get(summary.name, 0) / 72, 0, axes.figure.dpi_scale_trans)
         axes.errorbar(
             [summary.stored / 1e6],
             [summary.loss],
@@ -586,9 +596,10 @@ def panel(axes: Axes, budget: Budget, low: float, high: float, annotate: bool) -
             linewidth=1.5,
             linestyle="none",
             label=legend,
+            transform=axes.transData + dodge,
             zorder=4,
         )
-    visible = [summary.loss for summary in summaries.values() if low <= summary.stored / 1e6 <= high]
+    visible = [loss for summary in summaries.values() if low <= summary.stored / 1e6 <= high for loss in summary.losses]
     margin = 0.08 * (max(visible) - min(visible))
     axes.set_xlim(low, high)
     axes.set_ylim(min(visible) - margin, max(visible) + margin)
@@ -634,7 +645,8 @@ def main() -> None:
     first = read_budget(FIRST_STEPS, {name: FIRST_RATE for name in CONFIGS}, SEEDS)
     short = {name: complete(name, short_sweep(name)) for name in ARMS}
     long_sweeps = {name: complete(name, long_sweep(name)) for name in ARMS}
-    long = read_budget(LONG_STEPS, {name: lowest(sweep) for name, sweep in long_sweeps.items()}, SEEDS)
+    rates = {name: lowest(sweep) for name, sweep in long_sweeps.items()}
+    long = read_budget(LONG_STEPS, {name: rates[RATE_FROM.get(name, name)] for name in CONFIGS}, SEEDS)
     chart(long)
     sections = {
         "both-budgets": both_budgets_table(first, long),
@@ -664,6 +676,8 @@ def main() -> None:
     }
     text = TEMPLATE.read_text()
     for key, section in sections.items():
+        if "{{" + key + "}}" not in text:
+            raise ValueError(f"{TEMPLATE} has no place for the section {key}")
         text = text.replace("{{" + key + "}}", section)
     if "{{" in text:
         raise ValueError(f"{TEMPLATE} names a section this report does not write")

@@ -4,7 +4,7 @@ import math
 import subprocess
 import sys
 
-from weightbank.configs import CONFIGS, SEEDS
+from weightbank.configs import CONFIGS, FULL, OWN_CHUNK, SEEDS
 from weightbank.train import Plan
 
 FIRST_STEPS = 8000
@@ -14,7 +14,8 @@ RATE_GRID = (1.25e-4, 2.5e-4, 5e-4, 1e-3, 2e-3, 4e-3, 8e-3)
 SHORT_RATES = RATE_GRID[2:5]
 SWEEP_SEED = 0
 STEEP = 0.005
-ARMS = tuple(CONFIGS)
+ARMS = tuple(name for name in CONFIGS if name != OWN_CHUNK)
+RATE_FROM = {OWN_CHUNK: FULL}
 
 Sweep = dict[float, float | None]
 
@@ -74,7 +75,7 @@ def long_sweep(config: str) -> Sweep | None:
 
 
 def chosen(config: str) -> float | None:
-    sweep = long_sweep(config)
+    sweep = long_sweep(RATE_FROM.get(config, config))
     losses = None if sweep is None else finished(sweep)
     return None if losses is None else lowest(losses)
 
@@ -92,7 +93,7 @@ def long_sweep_runs() -> list[Plan]:
 
 
 def long_runs() -> list[Plan]:
-    rates = {config: chosen(config) for config in ARMS}
+    rates = {config: chosen(config) for config in CONFIGS}
     return [
         Plan(config, seed, LONG_STEPS, rate)
         for seed in SEEDS

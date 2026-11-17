@@ -6,8 +6,9 @@ Loss is cross-entropy on the validation split in nats per byte (divide by 0.693 
 Two experiments are reported together. The first trained every configuration for 8,000 steps
 at one learning rate (1e-3), three seeds. The second asks which of the first's gaps belong to
 the designs and which to a short or mis-tuned comparison: every configuration gets a learning
-rate chosen for it by sweeps, then three seeds at four times the budget (32,000 steps);
-[what was cut](#what-was-cut) lists the two configurations left out.
+rate chosen for it by sweeps, then three seeds at four times the budget (32,000 steps). The
+second also adds two families: two other routers for the model with both banks routed, and
+the fixed module-to-chunk map with no router at 1, 2, 4 and 8 chunks.
 A gap is a configuration's mean validation loss minus the better of the two plain curves read
 at its stored weights; negative means the configuration beats a plain model of its size.
 
@@ -17,10 +18,13 @@ READING
 
 ![Validation loss against stored weights](chart.png)
 
-The chart is the long budget. The dark line is the plain model narrowed from width 256 to 160
-at 8 modules; the lighter line is the plain model cut from 8 modules to 4 at width 256. Bands
-and bars run from the lowest to the highest of three seeds. The square is a control outside
-the question: both banks shared with no router, module i always using chunk i mod 4.
+The chart is the long budget, whole on the left and enlarged between 3 and 7 million stored
+weights on the right. The dark line is the plain model narrowed from width 256 to 128 at 8
+modules; the lighter line is the plain model cut from 8 modules to 1 at width 256. Bands and
+bars run from the lowest to the highest of three seeds. The dashed line joins the fixed
+module-to-chunk map with no router at 1, 2, 4 and 8 chunks. The fixed map at 4 chunks and the
+three models with both banks routed store the same weights to within 1.2%; their four points
+are drawn side by side so that none hides another.
 
 ## The gaps at both budgets
 
@@ -92,16 +96,12 @@ by a similar amount. The two small gaps of the first experiment are of that size
 
 ## What was cut
 
-- `own-chunk`, the check that the routed code path with N = M reproduces the full control,
-  was not repeated. It tests the code, which did not change, and not a design.
-- `plain-w128` (1,684,992 stored weights) was left out of the sweep and the long runs. The
-  smallest configuration compared against the curve stores 3,360,512 weights, which lies
-  between `plain-w160` and `plain-w192`, so no gap reads the curve below `plain-w160`.
 - The long sweep starts from two rates per configuration and adds more only under the rule
   above. Three long rates for every configuration would have added about six hours of the
-  GPU to an experiment sized for a day.
-- Nothing else: every other configuration of the first experiment has its sweep and three
-  long seeds.
+  GPU.
+- `own-chunk` has no sweep of its own: it is the full control computed through the bank code,
+  so it trains at the full control's rate, which keeps the two paired.
+CUTS
 
 ## Setup
 
@@ -118,7 +118,24 @@ by a similar amount. The two small gaps of the first experiment are of that size
 - Bank: 4 chunks of each routed kind for 8 modules. A feed-forward chunk is both linear maps
   of a feed-forward step; an attention chunk is the query/key/value map and the output map.
 - Router: one per routed kind, shared by all modules, 64 units wide. It scores the chunks from
-  the token's normalised hidden state plus a learned vector for the asking module.
+  the token's normalised hidden state plus a learned vector for the asking module:
+  `score(tanh(data(x) + asker[module]))`, where `score` is a linear map to one score per
+  chunk.
+- Key-per-chunk router (`both-routed-keys`): each chunk has a learned key of 64 numbers; the
+  score of a chunk is the dot product of its key with a query, `query(x + asker[module])`, a
+  linear map of the token's normalised hidden state plus the asking module's vector. It
+  differs from the router above in having no nonlinearity and no per-chunk bias and in adding
+  the module's vector before the linear map. Keys start at the scale of the other router's
+  scoring weights, so both start equally close to indifferent. The pick is trained the same
+  way.
+- Noise-free router (`both-routed-argmax`): the router above, but training takes the
+  highest-scoring chunk with no Gumbel noise; the gradient still flows through the softmax.
+- Fixed map (`both-no-router-c1`, `both-no-router-c2`, `both-no-router`, `own-chunk`): no
+  router; module i always computes with chunk i mod N, for N = 1, 2, 4, 8 chunks of each kind.
+  Every module keeps its own layer norms, as in every other configuration. The equal-storage
+  plain partner of N chunks is the plain model of N modules (`plain-l1`, `plain-l2`,
+  `plain-l4`, `full`); the fixed map stores (8 - N) x 1,024 more weights than its partner,
+  the layer norms of the extra modules.
 - Training the hard pick: straight-through Gumbel-softmax at temperature 1. The forward pass
   always computes with exactly one chunk per token per module, sampled with Gumbel noise, and
   the gradient flows through the softmax. This was chosen over a soft mixture annealed to a
@@ -143,27 +160,48 @@ by a similar amount. The two small gaps of the first experiment are of that size
 
 ## Sanity check: N = M, every module forced to its own chunk
 
-This check belongs to the first experiment (8,000 steps, rate 1e-3) and was not repeated at
-the long budget. `own-chunk` runs the routed code path with a bank of 8 chunks of each kind and no router:
+`own-chunk` runs the routed code path with a bank of 8 chunks of each kind and no router:
 module i always computes with chunk i. It starts from the same initial weights and sees the
-same batches as `full` at the same seed, so the comparison is paired by seed.
+same batches as `full` at the same seed, so the comparison is paired by seed. First budget:
 
-{{sanity}}
+{{sanity-first}}
 
-The per-seed differences (+0.0004, -0.0001, +0.0000) are about a fifth or less of the full control's
-seed sd (0.0021): the routed code path with N = M reproduces the full control.
+Long budget, both at the full control's rate:
 
-## Does the per-token pick matter?
+{{sanity-long}}
 
-`both-no-router` stores the same two banks as `both-routed` but fixes module i to chunk
-i mod 4, so it has no router and no per-token choice. At the same seed the two see the same
-batches (their initial weights differ). At the long budget, each at its chosen rate:
+SANITYNOTE
 
-{{no-router-long}}
+## Why did the fixed map beat the learned router?
 
-At the first budget:
+In the first experiment `both-no-router`, the same two banks with module i fixed to chunk
+i mod 4, beat `both-routed` by 0.045. Two things separate them besides the choice itself: the
+routed model trains under sampling noise (every pick is drawn with Gumbel noise), and its
+router has one particular form. `both-routed-argmax` removes the noise and
+`both-routed-keys` changes the form. All four store the same banks; at the same seed they
+see the same batches. Long budget, each at its chosen rate:
 
-{{no-router-first}}
+{{routers-long}}
+
+First budget, every one at 1e-3:
+
+{{routers-first}}
+
+ROUTERNOTE
+
+## Reuse without a router, by number of chunks
+
+The fixed map at 4 chunks is cycle sharing in the sense of Takase and Kiyono (2021, "Lessons
+on Parameter Sharing across Layers in Transformers", arXiv:2104.06022): a stack of N layers
+applied repeatedly. At 1 chunk it is ALBERT-style sharing (Lan et al., 2020, "ALBERT: A Lite
+BERT for Self-supervised Learning of Language Representations"): one layer applied 8 times.
+At 8 chunks it is the full control. Each is set beside the plain model of as many modules as
+it has chunks, which stores the same chunks and applies each once, and beside the plain
+curve at its stored weights.
+
+{{fixed-map}}
+
+FIXEDNOTE
 
 ## Picks at validation against picks in training
 
@@ -207,6 +245,14 @@ evenness is the entropy of usage divided by its maximum (1 is even).
 ### Both routed
 
 {{picks:both-routed}}
+
+### Both routed, no sampling noise
+
+{{picks:both-routed-argmax}}
+
+### Both routed, key per chunk
+
+{{picks:both-routed-keys}}
 
 ## Per configuration
 

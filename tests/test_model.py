@@ -312,7 +312,7 @@ def test_both_router_forms_start_near_indifferent_at_the_same_scale() -> None:
     for keys in (False, True):
         router = Transformer(ModelConfig(8, 256, feed_forward=Routed(4, keys=keys))).feed_forward.router
         assert router is not None
-        logits = router.logits(x, 0)
+        logits = router.logits(x, 0).detach()
         assert float(logits.softmax(-1).amax(-1).mean()) < 0.3
         spreads.append(float(logits.std(-1).mean()))
     assert 0.5 < spreads[1] / spreads[0] < 2
