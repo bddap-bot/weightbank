@@ -28,6 +28,8 @@ class Fixed:
 @dataclass(frozen=True)
 class Routed:
     chunks: int
+    noise: bool = True
+    keys: bool = False
 
 
 Sharing = Own | Fixed | Routed
@@ -87,19 +89,51 @@ class Picks:
         return self.hard.argmax(-1)
 
 
+def pick(logits: Tensor, sample: bool, straight_through: bool) -> Picks:
+    confidence = logits.detach().softmax(-1).amax(-1)
+    if sample:
+        return Picks(F.gumbel_softmax(logits, tau=1.0, hard=True), confidence)
+    hard = F.one_hot(logits.argmax(-1), logits.shape[-1]).float()
+    if straight_through:
+        soft = logits.softmax(-1)
+        hard = hard - soft.detach() + soft
+    return Picks(hard, confidence)
+
+
 class Router(nn.Module):
-    def __init__(self, config: ModelConfig, chunks: int) -> None:
+    def __init__(self, sharing: Routed) -> None:
         super().__init__()
-        self.data = linear(config.width, ROUTER_WIDTH)
-        self.asker = nn.Parameter(torch.randn(config.modules, ROUTER_WIDTH) * 0.02)
-        self.score = linear(ROUTER_WIDTH, chunks)
+        self.noise = sharing.noise
+
+    def logits(self, x: Tensor, module: int) -> Tensor:
+        raise NotImplementedError
 
     def forward(self, x: Tensor, module: int) -> Picks:
-        logits: Tensor = self.score(torch.tanh(self.data(x) + self.asker[module])).float()
-        confidence = logits.detach().softmax(-1).amax(-1)
-        if self.training:
-            return Picks(F.gumbel_softmax(logits, tau=1.0, hard=True), confidence)
-        return Picks(F.one_hot(logits.argmax(-1), logits.shape[-1]).float(), confidence)
+        return pick(self.logits(x, module).float(), self.training and self.noise, self.training)
+
+
+class ScoreRouter(Router):
+    def __init__(self, config: ModelConfig, sharing: Routed) -> None:
+        super().__init__(sharing)
+        self.data = linear(config.width, ROUTER_WIDTH)
+        self.asker = nn.Parameter(torch.randn(config.modules, ROUTER_WIDTH) * 0.02)
+        self.score = linear(ROUTER_WIDTH, sharing.chunks)
+
+    def logits(self, x: Tensor, module: int) -> Tensor:
+        logits: Tensor = self.score(torch.tanh(self.data(x) + self.asker[module]))
+        return logits
+
+
+class KeyRouter(Router):
+    def __init__(self, config: ModelConfig, sharing: Routed) -> None:
+        super().__init__(sharing)
+        self.query = linear(config.width, ROUTER_WIDTH)
+        self.asker = nn.Parameter(torch.randn(config.modules, config.width) * 0.02)
+        self.keys = nn.Parameter(torch.randn(sharing.chunks, ROUTER_WIDTH))
+
+    def logits(self, x: Tensor, module: int) -> Tensor:
+        logits: Tensor = self.query(x + self.asker[module]) @ self.keys.T / math.sqrt(ROUTER_WIDTH)
+        return logits
 
 
 def fixed(like: Tensor, chunk: int, chunks: int) -> Picks:
@@ -131,7 +165,9 @@ class Bank(nn.Module, Generic[Chunk]):
         count = config.modules if isinstance(sharing, Own) else sharing.chunks
         self.chunks = tuple(chunk(config) for _ in range(count))
         self.registered = nn.ModuleList(self.chunks)
-        self.router = Router(config, count) if isinstance(sharing, Routed) else None
+        self.router: Router | None = None
+        if isinstance(sharing, Routed):
+            self.router = KeyRouter(config, sharing) if sharing.keys else ScoreRouter(config, sharing)
 
     def picks(self, x: Tensor, module: int) -> Picks | None:
         if self.router is not None:

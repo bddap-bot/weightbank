@@ -26,7 +26,7 @@ from weightbank.sweep import (
 from weightbank.train import Plan, Run
 
 ARM = "ff-routed"
-SWEPT = tuple(name for name in CONFIGS if name not in ("own-chunk", "plain-w128"))
+SWEPT = tuple(CONFIGS)
 
 
 @pytest.fixture(autouse=True)
@@ -90,7 +90,7 @@ def test_the_first_experiment_is_every_configuration_at_one_rate() -> None:
     assert first_runs() == [Plan(config, seed, 8000, 1e-3) for seed in SEEDS for config in CONFIGS]
 
 
-def test_only_the_compared_configurations_are_swept() -> None:
+def test_every_configuration_is_swept() -> None:
     assert short_runs() == [short_plan(config, rate) for config in SWEPT for rate in (5e-4, 1e-3, 2e-3)]
     assert set(short_runs()) <= set(planned())
 

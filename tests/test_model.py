@@ -5,8 +5,22 @@ import math
 import torch
 from torch import Tensor, nn
 
-from weightbank.configs import BANK, CONFIGS, FULL, MODULES, NO_ROUTER, OWN_CHUNK
-from weightbank.model import VOCAB, Bank, Fixed, ModelConfig, Own, Routed, Sharing, Transformer, mix
+from weightbank.configs import BANK, CONFIGS, FIXED_MAP, FULL, KEYS, MODULES, NO_ROUTER, NOISE_FREE, OWN_CHUNK
+from weightbank.model import (
+    ROUTER_WIDTH,
+    VOCAB,
+    Bank,
+    Fixed,
+    KeyRouter,
+    ModelConfig,
+    Own,
+    Routed,
+    ScoreRouter,
+    Sharing,
+    Transformer,
+    mix,
+    pick,
+)
 
 
 def small(feed_forward: Sharing, attention: Sharing) -> Transformer:
@@ -101,7 +115,7 @@ def test_routed_output_depends_on_the_pick_at_both_attention_maps() -> None:
 def test_router_reads_the_data_and_the_asking_module() -> None:
     torch.manual_seed(0)
     router = small(Routed(4), Own()).feed_forward.router
-    assert router is not None
+    assert isinstance(router, ScoreRouter)
     router.eval()
     with torch.no_grad():
         router.asker.normal_()
@@ -163,7 +177,7 @@ def test_routed_model_computes_the_plain_model_built_from_the_chunks_each_module
     }
     for kind, assignment in assignments.items():
         bank = getattr(routed, kind)
-        assert isinstance(bank, Bank) and bank.router is not None
+        assert isinstance(bank, Bank) and isinstance(bank.router, ScoreRouter)
         with torch.no_grad():
             for parameter in bank.router.parameters():
                 parameter.zero_()
@@ -192,3 +206,100 @@ def test_residual_output_weights_start_scaled_down_by_depth() -> None:
         assert len(scaled) == 2 * chunks
         for parameter in scaled:
             assert abs(parameter.std().item() / expected - 1) < 0.1
+
+
+def test_a_pick_without_noise_is_the_highest_score_and_passes_the_softmax_gradient() -> None:
+    torch.manual_seed(0)
+    logits = torch.randn(5, 4, requires_grad=True)
+    weights = torch.randn(5, 4)
+    picks = pick(logits, sample=False, straight_through=True)
+    assert torch.equal(picks.chunk, logits.argmax(-1))
+    assert torch.allclose(picks.hard, torch.nn.functional.one_hot(logits.argmax(-1), 4).float(), atol=1e-6)
+    (through,) = torch.autograd.grad((picks.hard * weights).sum(), logits)
+    (soft,) = torch.autograd.grad((logits.softmax(-1) * weights).sum(), logits)
+    assert torch.allclose(through, soft, atol=1e-6)
+    assert bool(through.abs().sum() > 0)
+    assert not pick(logits, sample=False, straight_through=False).hard.requires_grad
+
+
+def test_noise_free_training_picks_are_the_evaluation_picks_and_every_weight_gets_a_gradient() -> None:
+    torch.manual_seed(0)
+    model = small(Routed(2, noise=False), Routed(2, noise=False))
+    batch = tokens(8, 64)
+    logits, trace = model(batch)
+    again = model(batch)[1]
+    model.eval()
+    evaluated = model(batch)[1]
+    model.train()
+    for kind in ("feed_forward", "attention"):
+        for picks, second, third in zip(getattr(trace, kind), getattr(again, kind), getattr(evaluated, kind)):
+            assert picks.hard.requires_grad
+            assert torch.equal(picks.chunk, second.chunk)
+            assert torch.equal(picks.chunk, third.chunk)
+    chunks = torch.cat([picks.chunk.flatten() for picks in trace.feed_forward])
+    assert bool(chunks.min() < chunks.max())
+    logits.square().mean().backward()
+    for name, parameter in model.named_parameters():
+        assert parameter.grad is not None and bool(parameter.grad.abs().sum() > 0), name
+
+
+def test_key_router_scores_each_chunk_by_the_dot_product_of_a_query_with_its_key() -> None:
+    torch.manual_seed(0)
+    router = small(Routed(4, keys=True), Own()).feed_forward.router
+    assert isinstance(router, KeyRouter)
+    x = torch.randn(64, 32)
+    query = (x + router.asker[1]) @ router.query.weight.T + router.query.bias
+    expected = torch.stack([query @ key for key in router.keys], dim=-1) / math.sqrt(ROUTER_WIDTH)
+    assert torch.allclose(router.logits(x, 1), expected, atol=1e-6)
+    router.eval()
+    assert torch.equal(router(x, 1).chunk, expected.argmax(-1))
+    with torch.no_grad():
+        router.asker.normal_()
+    assert len(router(x, 0).chunk.unique()) > 1
+    assert not torch.equal(router(x, 0).chunk, router(x, 1).chunk)
+
+
+def test_key_router_samples_in_training_and_every_weight_gets_a_gradient() -> None:
+    torch.manual_seed(0)
+    model = small(Routed(2, keys=True), Routed(2, keys=True))
+    batch = tokens(8, 64)
+    logits, trace = model(batch)
+    assert not torch.equal(trace.feed_forward[0].chunk, model(batch)[1].feed_forward[0].chunk)
+    for picks in trace.feed_forward + trace.attention:
+        assert bool((picks.hard.sum(-1) == 1).all())
+    logits.square().mean().backward()
+    for name, parameter in model.named_parameters():
+        assert parameter.grad is not None and bool(parameter.grad.abs().sum() > 0), name
+
+
+def test_router_variants_store_the_banks_of_the_routed_model() -> None:
+    routed = Transformer(CONFIGS["both-routed"])
+    noise_free = Transformer(CONFIGS[NOISE_FREE])
+    keys = Transformer(CONFIGS[KEYS])
+    assert noise_free.stored_weights() == routed.stored_weights()
+    assert isinstance(noise_free.attention.router, ScoreRouter) and not noise_free.attention.router.noise
+    assert isinstance(routed.attention.router, ScoreRouter) and routed.attention.router.noise
+    assert isinstance(keys.attention.router, KeyRouter) and isinstance(keys.feed_forward.router, KeyRouter)
+    assert keys.attention.router.noise
+
+    def routers(model: Transformer) -> int:
+        return sum(
+            parameter.numel()
+            for bank in (model.attention, model.feed_forward)
+            if bank.router is not None
+            for parameter in bank.router.parameters()
+        )
+
+    assert keys.stored_weights() - routers(keys) == routed.stored_weights() - routers(routed)
+
+
+def test_the_fixed_map_stores_one_plain_layer_per_chunk_and_every_module_keeps_its_norms() -> None:
+    norms = 2 * 2 * 256
+    for chunks, name in FIXED_MAP.items():
+        model = Transformer(CONFIGS[name])
+        assert len(model.attention.chunks) == len(model.feed_forward.chunks) == chunks
+        plain = Transformer(CONFIGS[FULL if chunks == MODULES else f"plain-l{chunks}"])
+        assert model.stored_weights() == plain.stored_weights() + (MODULES - chunks) * norms
+        _, trace = model(tokens())
+        for kind in (trace.feed_forward, trace.attention):
+            assert [picks.chunk.unique().tolist() for picks in kind] == [[module % chunks] for module in range(MODULES)]

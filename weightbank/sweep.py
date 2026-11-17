@@ -4,7 +4,7 @@ import math
 import subprocess
 import sys
 
-from weightbank.configs import CONFIGS, OWN_CHUNK, SEEDS
+from weightbank.configs import CONFIGS, SEEDS
 from weightbank.train import Plan
 
 FIRST_STEPS = 8000
@@ -14,8 +14,7 @@ RATE_GRID = (1.25e-4, 2.5e-4, 5e-4, 1e-3, 2e-3, 4e-3, 8e-3)
 SHORT_RATES = RATE_GRID[2:5]
 SWEEP_SEED = 0
 STEEP = 0.005
-BELOW_EVERY_ARM = "plain-w128"
-ARMS = tuple(name for name in CONFIGS if name not in (OWN_CHUNK, BELOW_EVERY_ARM))
+ARMS = tuple(CONFIGS)
 
 Sweep = dict[float, float | None]
 

@@ -10,8 +10,24 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.axes import Axes
 
-from weightbank.configs import CONFIGS, FULL, MODULES, NARROWER, NO_ROUTER, OWN_CHUNK, ROUTED, SEEDS, SHALLOWER, WIDTH
+from weightbank.configs import (
+    CONFIGS,
+    FIXED_MAP,
+    FULL,
+    KEYS,
+    MODULES,
+    NARROWER,
+    NO_ROUTER,
+    NOISE_FREE,
+    OWN_CHUNK,
+    ROUTED,
+    ROUTER_VARIANTS,
+    SEEDS,
+    SHALLOWER,
+    WIDTH,
+)
 from weightbank.sweep import (
     ARMS,
     FIRST_RATE,
@@ -37,9 +53,25 @@ MUTED = "#52514e"
 GRID = "#e4e3df"
 NARROWER_LINE = "#52514e"
 SHALLOWER_LINE = "#a3a29c"
-LABELS = {"ff-routed": "feed-forward routed", "attn-routed": "attention routed", "both-routed": "both routed"}
-COLORS = {"ff-routed": "#2a78d6", "attn-routed": "#eb6834", "both-routed": "#1baf7a"}
-assert LABELS.keys() == COLORS.keys() == ROUTED.keys()
+FIXED_LINE = "#0b0b0b"
+PICKING = (*ROUTED, *ROUTER_VARIANTS)
+COMPARED = (*PICKING, *FIXED_MAP.values())
+LABELS = {
+    "ff-routed": "feed-forward routed",
+    "attn-routed": "attention routed",
+    "both-routed": "both routed",
+    NOISE_FREE: "both routed, no sampling noise",
+    KEYS: "both routed, key per chunk",
+}
+COLORS = {
+    "ff-routed": "#2a78d6",
+    "attn-routed": "#eb6834",
+    "both-routed": "#1baf7a",
+    NOISE_FREE: "#8a5cd6",
+    KEYS: "#c9477b",
+}
+MARKERS = {"ff-routed": "D", "attn-routed": "D", "both-routed": "D", NOISE_FREE: "^", KEYS: "v"}
+assert LABELS.keys() == COLORS.keys() == MARKERS.keys() == set(PICKING)
 
 
 @dataclass
@@ -70,6 +102,10 @@ class Summary:
         return stdev(self.losses)
 
 
+def covers(curve: Sequence[tuple[int, float]], stored: int) -> bool:
+    return curve[0][0] <= stored <= curve[-1][0]
+
+
 def interpolate(curve: Sequence[tuple[int, float]], stored: int) -> float:
     for (low, low_loss), (high, high_loss) in zip(curve, curve[1:]):
         if low <= stored <= high:
@@ -98,10 +134,14 @@ class Budget:
     def curves(self) -> dict[str, list[Summary]]:
         return {"narrower": self.narrower, "shallower": self.shallower}
 
+    def read(self, curve: str, stored: int) -> float | None:
+        points = means(self.curves()[curve])
+        return interpolate(points, stored) if covers(points, stored) else None
+
     def better(self, name: str) -> str:
         stored = self.summaries[name].stored
-        curves = self.curves()
-        return min(curves, key=lambda curve: interpolate(means(curves[curve]), stored))
+        reads = {curve: self.read(curve, stored) for curve in self.curves()}
+        return min((curve for curve, loss in reads.items() if loss is not None), key=lambda curve: reads[curve] or 0.0)
 
     def gaps(self, name: str, curve: str) -> list[float]:
         summary = self.summaries[name]
@@ -201,7 +241,7 @@ def both_budgets_table(first: Budget, long: Budget) -> str:
             f"{fmean(gap for seed, gap in zip(SEEDS, long.gaps(name, long.better(name))) if seed != SWEEP_SEED):+.4f}",
             f"{long.gap(name) - first.gap(name):+.4f}",
         ]
-        for name in (*ROUTED, NO_ROUTER)
+        for name in COMPARED
     ]
     return table(
         [
@@ -222,7 +262,7 @@ def both_budgets_table(first: Budget, long: Budget) -> str:
 
 def rate_alone_table(first: Budget, at_first_rate: Budget, at_best_rates: Budget) -> str:
     rows = []
-    for name in (*ROUTED, NO_ROUTER):
+    for name in COMPARED:
         curve = first.better(name)
         (before,) = at_first_rate.gaps(name, curve)
         (after,) = at_best_rates.gaps(name, curve)
@@ -262,7 +302,6 @@ def plain_table(first: Budget, long: Budget) -> str:
             f"{long.summaries[name].loss - first.summaries[name].loss:+.4f}",
         ]
         for name in (*NARROWER, *SHALLOWER, FULL)
-        if name in long.summaries
     ]
     return table(
         [
@@ -279,12 +318,20 @@ def plain_table(first: Budget, long: Budget) -> str:
     )
 
 
+def signed(value: float | None) -> str:
+    return "" if value is None else f"{value:+.4f}"
+
+
+def unsigned(value: float | None) -> str:
+    return "" if value is None else f"{value:.4f}"
+
+
 def gap_table(budget: Budget) -> str:
     rows = []
-    for name in (*ROUTED, NO_ROUTER):
+    for name in COMPARED:
         summary = budget.summaries[name]
-        by_width = interpolate(means(budget.narrower), summary.stored)
-        by_depth = interpolate(means(budget.shallower), summary.stored)
+        by_width = budget.read("narrower", summary.stored)
+        by_depth = budget.read("shallower", summary.stored)
         rows.append(
             [
                 name,
@@ -292,10 +339,10 @@ def gap_table(budget: Budget) -> str:
                 f"{summary.stored:,}",
                 f"{summary.loss:.4f}",
                 f"{summary.spread:.4f}",
-                f"{by_width:.4f}",
-                f"{summary.loss - by_width:+.4f}",
-                f"{by_depth:.4f}",
-                f"{summary.loss - by_depth:+.4f}",
+                unsigned(by_width),
+                signed(None if by_width is None else summary.loss - by_width),
+                unsigned(by_depth),
+                signed(None if by_depth is None else summary.loss - by_depth),
                 f"{budget.gap(name):+.4f}",
             ]
         )
@@ -314,6 +361,69 @@ def gap_table(budget: Budget) -> str:
         ],
         rows,
     )
+
+
+def versus_table(summaries: dict[str, Summary], names: Sequence[str], against: str) -> str:
+    theirs = summaries[against]
+    rows = []
+    for name in names:
+        ours = summaries[name]
+        differences = [a - b for a, b in zip(ours.losses, theirs.losses)]
+        rows.append(
+            [
+                name,
+                f"{ours.rate:g}",
+                f"{ours.stored:,}",
+                *(f"{loss:.4f}" for loss in ours.losses),
+                f"{ours.loss:.4f}",
+                f"{ours.spread:.4f}",
+                "" if name == against else f"{fmean(differences):+.4f}",
+                "" if name == against else span(differences),
+            ]
+        )
+    return table(
+        [
+            "configuration",
+            "learning rate",
+            "stored weights",
+            *(f"seed {seed}" for seed in SEEDS),
+            "mean",
+            "seed sd",
+            f"minus {against}",
+            "lowest to highest seed",
+        ],
+        rows,
+    )
+
+
+def partner(chunks: int) -> str:
+    return FULL if chunks == MODULES else f"plain-l{chunks}"
+
+
+def fixed_map_table(first: Budget, long: Budget) -> str:
+    rows = []
+    for chunks, name in FIXED_MAP.items():
+        cells = [str(chunks), name, f"{long.summaries[name].stored:,}", partner(chunks)]
+        for budget in (first, long):
+            ours, theirs = budget.summaries[name], budget.summaries[partner(chunks)]
+            cells += [
+                f"{ours.loss:.4f}",
+                f"{theirs.loss:.4f}",
+                f"{ours.loss - theirs.loss:+.4f}",
+                span([a - b for a, b in zip(ours.losses, theirs.losses)]),
+                f"{budget.gap(name):+.4f}",
+            ]
+        rows.append(cells)
+    header = ["chunks", "configuration", "stored weights", "plain partner"]
+    for budget in (first, long):
+        header += [
+            f"loss, {budget.steps:,} steps",
+            "partner's loss",
+            "minus partner",
+            "lowest to highest seed",
+            "gap to the plain curve",
+        ]
+    return table(header, rows)
 
 
 def paired_table(summaries: dict[str, Summary], name: str, against: str) -> str:
@@ -352,7 +462,7 @@ def sampled_table(summaries: dict[str, Summary]) -> str:
             f"{summaries[name].loss:.4f}",
             f"{fmean(run.sampled_picks_validation_loss for run in summaries[name].runs):.4f}",
         ]
-        for name in ROUTED
+        for name in PICKING
     ]
     return table(["configuration", "highest-scoring picks (reported)", "picks sampled as in training"], rows)
 
@@ -371,7 +481,7 @@ def off_common(stats: PickStats) -> list[float]:
 
 def pick_variation_table(first: Budget, long: Budget) -> str:
     rows = []
-    for name in ROUTED:
+    for name in PICKING:
         for kind in ("feed_forward", "attention"):
             cells = []
             for budget in (first, long):
@@ -428,14 +538,13 @@ def picks_table(summary: Summary) -> str:
     )
 
 
-def chart(budget: Budget) -> None:
-    summaries, narrower, shallower = budget.summaries, budget.narrower, budget.shallower
-    figure, axes = plt.subplots(figsize=(9, 5.6), dpi=160, facecolor=SURFACE)
+def panel(axes: Axes, budget: Budget, low: float, high: float, annotate: bool) -> None:
+    summaries = budget.summaries
     axes.set_facecolor(SURFACE)
     axes.set_xscale("log")
     for curve, color, label in (
-        (narrower, NARROWER_LINE, f"plain, narrower ({MODULES} modules)"),
-        (shallower, SHALLOWER_LINE, f"plain, fewer modules (width {WIDTH})"),
+        (budget.narrower, NARROWER_LINE, f"plain, narrower ({MODULES} modules)"),
+        (budget.shallower, SHALLOWER_LINE, f"plain, fewer modules (width {WIDTH})"),
     ):
         stored = [summary.stored / 1e6 for summary in curve]
         axes.plot(stored, [summary.loss for summary in curve], color=color, linewidth=2, marker="o", markersize=5, label=label, zorder=2)
@@ -448,14 +557,23 @@ def chart(budget: Budget) -> None:
             linewidth=0,
             zorder=1,
         )
-    points = [(name, COLORS[name], COLORS[name], LABELS[name], "D") for name in ROUTED]
-    points.append((NO_ROUTER, INK, SURFACE, "both shared, no router", "s"))
-    label_offsets = {"ff-routed": (0, -26), "attn-routed": (0, 14), NO_ROUTER: (-12, -4)}
-    for name, color, fill, label, marker in points:
-        summary = summaries[name]
-        x = summary.stored / 1e6
+    fixed = [summaries[name] for name in FIXED_MAP.values()]
+    axes.plot(
+        [summary.stored / 1e6 for summary in fixed],
+        [summary.loss for summary in fixed],
+        color=FIXED_LINE,
+        linewidth=1.5,
+        linestyle=(0, (4, 3)),
+        zorder=3,
+    )
+    points: list[tuple[Summary, str, str, str, str | None]] = [
+        (summaries[name], FIXED_LINE, SURFACE, "s", "fixed map, no router (chunks beside each)" if chunks == 1 else None)
+        for chunks, name in FIXED_MAP.items()
+    ]
+    points += [(summaries[name], COLORS[name], COLORS[name], MARKERS[name], LABELS[name]) for name in PICKING]
+    for summary, color, fill, marker, legend in points:
         axes.errorbar(
-            [x],
+            [summary.stored / 1e6],
             [summary.loss],
             yerr=[[summary.loss - min(summary.losses)], [max(summary.losses) - summary.loss]],
             color=color,
@@ -463,29 +581,26 @@ def chart(budget: Budget) -> None:
             markersize=7,
             markerfacecolor=fill,
             markeredgecolor=SURFACE if fill == color else color,
-            markeredgewidth=2,
-            capsize=6,
-            linewidth=2,
+            markeredgewidth=1.5,
+            capsize=5,
+            linewidth=1.5,
             linestyle="none",
+            label=legend,
             zorder=4,
         )
-        offset = label_offsets.get(name, (10, 8))
-        side = "right" if offset[0] < 0 else "center" if offset[0] == 0 else "left"
-        axes.annotate(label, (x, summary.loss), xytext=offset, textcoords="offset points", color=INK, fontsize=10, ha=side)
-    full = summaries[FULL]
-    axes.annotate("full control", (full.stored / 1e6, full.loss), xytext=(-8, -16), textcoords="offset points", color=MUTED, fontsize=10, ha="right")
-    ticks = [3, 4, 5, 6]
+    visible = [summary.loss for summary in summaries.values() if low <= summary.stored / 1e6 <= high]
+    margin = 0.08 * (max(visible) - min(visible))
+    axes.set_xlim(low, high)
+    axes.set_ylim(min(visible) - margin, max(visible) + margin)
+    if annotate:
+        for chunks, name in FIXED_MAP.items():
+            summary = summaries[name]
+            if low <= summary.stored / 1e6 <= high:
+                axes.annotate(str(chunks), (summary.stored / 1e6, summary.loss), xytext=(-9, -4), textcoords="offset points", color=INK, fontsize=10, ha="right")
+    ticks = [tick for tick in (1, 2, 3, 4, 5, 6) if low <= tick <= high]
     axes.set_xticks(ticks, [str(tick) for tick in ticks])
     axes.set_xticks([], minor=True)
-    axes.set_xlim(2.3, 7.2)
     axes.set_xlabel("stored weights (millions, log scale)", color=MUTED)
-    axes.set_ylabel("validation loss (nats per byte)", color=MUTED)
-    axes.set_title(
-        f"Validation loss against stored weights, enwik8, {budget.steps:,} steps, {len(SEEDS)} seeds (bars and bands: lowest to highest)",
-        color=INK,
-        fontsize=11,
-        loc="left",
-    )
     axes.grid(color=GRID, linewidth=1)
     axes.set_axisbelow(True)
     axes.tick_params(colors=MUTED)
@@ -493,8 +608,25 @@ def chart(budget: Budget) -> None:
         axes.spines[side].set_visible(False)
     for side in ("left", "bottom"):
         axes.spines[side].set_color(GRID)
-    axes.legend(frameon=False, labelcolor=INK)
-    figure.tight_layout()
+
+
+def chart(budget: Budget) -> None:
+    figure, (whole, detail) = plt.subplots(1, 2, figsize=(13, 6.4), dpi=160, facecolor=SURFACE, width_ratios=(1, 1.25))
+    panel(whole, budget, 0.85, 7.4, annotate=True)
+    panel(detail, budget, 3.1, 7.0, annotate=True)
+    whole.set_ylabel("validation loss (nats per byte)", color=MUTED)
+    whole.set_title("every size", color=MUTED, fontsize=10, loc="left")
+    detail.set_title("3 to 7 million stored weights", color=MUTED, fontsize=10, loc="left")
+    figure.suptitle(
+        f"Validation loss against stored weights, enwik8, {budget.steps:,} steps, {len(SEEDS)} seeds (bars and bands: lowest to highest)",
+        color=INK,
+        fontsize=12,
+        x=0.01,
+        ha="left",
+    )
+    handles, labels = whole.get_legend_handles_labels()
+    figure.legend(handles, labels, loc="lower center", ncol=4, frameon=False, labelcolor=INK, fontsize=10)
+    figure.tight_layout(rect=(0, 0.09, 1, 0.96))
     figure.savefig(CHART, facecolor=SURFACE)
 
 
@@ -516,9 +648,11 @@ def main() -> None:
         "plain": plain_table(first, long),
         "gaps-long": gap_table(long),
         "gaps-first": gap_table(first),
-        "sanity": paired_table(first.summaries, OWN_CHUNK, FULL),
-        "no-router-long": paired_table(long.summaries, "both-routed", NO_ROUTER),
-        "no-router-first": paired_table(first.summaries, "both-routed", NO_ROUTER),
+        "sanity-first": paired_table(first.summaries, OWN_CHUNK, FULL),
+        "sanity-long": paired_table(long.summaries, OWN_CHUNK, FULL),
+        "routers-long": versus_table(long.summaries, (NO_ROUTER, "both-routed", *ROUTER_VARIANTS), NO_ROUTER),
+        "routers-first": versus_table(first.summaries, (NO_ROUTER, "both-routed", *ROUTER_VARIANTS), NO_ROUTER),
+        "fixed-map": fixed_map_table(first, long),
         "during-training": during_training_table(long),
         "sampled": sampled_table(long.summaries),
         "log-windows": f"{LOG_WINDOWS:,}",
@@ -526,7 +660,7 @@ def main() -> None:
         "runs": runs_table(),
         "summary-long": summary_table(long.summaries),
         "summary-first": summary_table(first.summaries),
-        **{f"picks:{name}": picks_table(long.summaries[name]) for name in ROUTED},
+        **{f"picks:{name}": picks_table(long.summaries[name]) for name in PICKING},
     }
     text = TEMPLATE.read_text()
     for key, section in sections.items():
