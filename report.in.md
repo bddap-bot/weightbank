@@ -19,7 +19,7 @@ READING
 ![Validation loss against stored weights](chart.png)
 
 The chart is the long budget, whole on the left and enlarged between 3 and 7 million stored
-weights on the right. The dark line is the plain model narrowed from width 256 to 128 at 8
+weights on the right. The dark line is the plain model narrowed from width 256 to 96 at 8
 modules; the lighter line is the plain model cut from 8 modules to 1 at width 256. Bands and
 bars run from the lowest to the highest of three seeds. The dashed line joins the fixed
 module-to-chunk map with no router at 1, 2, 4 and 8 chunks. The fixed map at 4 chunks and the

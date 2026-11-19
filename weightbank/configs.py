@@ -8,7 +8,7 @@ BANK = MODULES // 2
 SEEDS = (0, 1, 2)
 
 FULL = "full"
-NARROWER = {f"plain-w{width}": ModelConfig(MODULES, width) for width in (128, 160, 192, 224)}
+NARROWER = {f"plain-w{width}": ModelConfig(MODULES, width) for width in (96, 128, 160, 192, 224)}
 SHALLOWER = {f"plain-l{depth}": ModelConfig(depth, WIDTH) for depth in (1, 2, 4, 6)}
 ROUTED = {
     "ff-routed": ModelConfig(MODULES, WIDTH, feed_forward=Routed(BANK)),

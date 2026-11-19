@@ -38,10 +38,13 @@ The full write-up, with every run, is in [report.md](report.md).
   single key/value cache runs, and it is what is trained.
 - **Private weights.** Each module keeps its own two layer norms; they count as stored
   weights, as do the routers, embeddings and output head.
-- **Controls.** The full unshared model; plain models narrowed to widths 128 to 224 and plain
-  models cut to 4 and 6 modules, which draw loss against stored weights; the routed code
-  path with N = M and every module forced to its own chunk, which must match the full model;
-  and both banks shared with no router, module i always using chunk i mod 4.
+- **Controls.** The full unshared model; plain models narrowed to widths 96 to 224 and plain
+  models cut to 1, 2, 4 and 6 modules, which draw loss against stored weights; and the fixed
+  map, both banks shared with no router, module i always using chunk i mod N, at N = 1, 2, 4
+  and 8 chunks. At N = 8 every module has its own chunk and the model must match the full one.
+- **Other routers.** For the model with both banks routed: the same router trained with no
+  sampling noise (the highest-scoring chunk, gradient through the softmax), and a router that
+  scores each chunk by the dot product of a learned key with a query.
 - **Data.** [enwik8](https://mattmahoney.net/dc/textdata.html), the first 100 MB of an English
   Wikipedia dump (text under CC BY-SA 3.0 / GFDL): 90 MB to train, the next 5 MB to validate.
 
@@ -50,16 +53,18 @@ The full write-up, with every run, is in [report.md](report.md).
 The environment is pinned in `shell.nix` (PyTorch with CUDA); enter it with `nix-shell`.
 
 ```sh
-python -m weightbank.train both-routed --seed 0   # one run, written to runs/both-routed-s0.json
-python -m weightbank.sweep                         # every run that runs/ lacks
+python -m weightbank.train both-routed --seed 0 --steps 8000 --rate 1e-3
+python -m weightbank.sweep                         # every planned run that runs/ lacks
 python -m weightbank.report                        # report.md and chart.png from runs/
 python -m pytest && python -m mypy                 # tests and type check
 ```
 
-Configurations are named in `weightbank/configs.py`: `full`, `plain-w128` to `plain-w224`,
-`plain-l4`, `plain-l6`, `ff-routed`, `attn-routed`, `both-routed`, `own-chunk`,
-`both-no-router`. The first run downloads enwik8 into `data/`. The reported runs, in `runs/`,
-were trained on one RTX 2080, 8 GB.
+The first command reproduces one run, any run of either experiment, and writes it to
+`runs/<steps>/<configuration>-lr<rate>-s<seed>.json`; the table of every run in
+[report.md](report.md) gives the four values of each. Configurations are named in
+`weightbank/configs.py`. `weightbank/sweep.py` holds the plan: the first experiment, the
+learning-rate sweeps, and the long runs at the rates the sweeps chose. The first run downloads
+enwik8 into `data/`. The reported runs were trained on one RTX 2080, 8 GB.
 
 ## License
 

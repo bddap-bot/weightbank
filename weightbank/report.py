@@ -607,7 +607,7 @@ def panel(axes: Axes, budget: Budget, low: float, high: float, annotate: bool) -
         for chunks, name in FIXED_MAP.items():
             summary = summaries[name]
             if low <= summary.stored / 1e6 <= high:
-                axes.annotate(str(chunks), (summary.stored / 1e6, summary.loss), xytext=(-9, -4), textcoords="offset points", color=INK, fontsize=10, ha="right")
+                axes.annotate(str(chunks), (summary.stored / 1e6, summary.loss), xytext=(DODGE.get(name, 0) - 9, -4), textcoords="offset points", color=INK, fontsize=10, ha="right")
     ticks = [tick for tick in (1, 2, 3, 4, 5, 6) if low <= tick <= high]
     axes.set_xticks(ticks, [str(tick) for tick in ticks])
     axes.set_xticks([], minor=True)
