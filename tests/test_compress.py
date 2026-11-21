@@ -403,3 +403,12 @@ def test_normalise_scales_to_unit_size_times_its_weight() -> None:
     x = torch.tensor([[3.0, 4.0]])
     out = lm.normalise(x, torch.tensor([2.0, 0.5]))
     assert torch.allclose(out, torch.tensor([[2 * 3.0, 0.5 * 4.0]]) / 12.5**0.5, atol=1e-4)
+
+
+def test_routed_start_is_as_strong_as_its_prior() -> None:
+    model = tiny()
+    fitted = bank.fit(layers_of(model), pairs(5), 4, matched=True)
+    for prior in run.PRIOR.values():
+        step = bank.routed(model, fitted, prior).block(7).feed_forward
+        assert isinstance(step, bank.RoutedFeedForward)
+        assert step.router.prior[7].tolist() == [prior if chunk == fitted.assignment[7] else 0.0 for chunk in range(5)]

@@ -29,7 +29,7 @@ Every table below is written by `python -m weightbank.compress` from the files i
 ![Stored bytes against perplexity for every arm](compress-chart.png)
 
 Left: every arm before healing (hollow) and after (filled), at 16-bit weights, labelled by
-bank size/rank; the weights-only fit alone leaves perplexity between 140 and 10^8, and healing
+bank size/rank; the weights-only fit alone leaves perplexity between 140 and 1.3 x 10^8, and healing
 recovers most of it. Right: the healed arms stored at 16, 8 and 4 bits, with the original model rounded to
 8, 6, 5, 4 and 3 bits as the black line. Arms that land on the same point are drawn as rings:
 the shared bank is the small blue mark, and it sits inside the green same-layers control at
@@ -258,8 +258,8 @@ credited to sharing is mostly a gain from uneven treatment of layers, is from on
 nix-shell --run 'python -m weightbank.compress'
 ```
 
-It needs Nix (`shell.nix` pins the environment), a CUDA GPU with 8 GB and about 430 MB of
-downloads, which go into `data/compress/` and are checked against pinned SHA-256 sums. It runs
+It needs Nix (`shell.nix` pins the environment), a CUDA GPU (the runs here used one with 8 GB)
+and about 430 MB of downloads, which go into `data/compress/` and are checked against pinned SHA-256 sums. It runs
 every arm that `runs/compress/` lacks and rewrites this report and its two charts. With
 `runs/compress/` as committed it only rewrites the report; delete that directory to run
-everything again, about seven hours on one RTX 2080.
+everything again, about six and a half hours of healing on one RTX 2080.

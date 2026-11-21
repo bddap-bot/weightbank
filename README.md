@@ -36,7 +36,7 @@ distillation. It did not pay: rounding the original to 5 bits cuts it from 269 t
 perplexity 23.1, the best bank arm reaches 240 MB at 23.8, and every bank arm at 16 or 8 bits
 is beaten by plain rounding at fewer bytes. The bank has 15 to 24% lower perplexity than low
 rank on every layer at equal bytes, but a control that leaves the same layers whole
-and shares nothing comes within 2% of it, and a per-input router added nothing. The layers of
+and shares nothing comes within 2.2% of it, and a per-input router added nothing. The layers of
 that model have almost nothing in common to share, so this is a result about retrofitting,
 not about banks a model is trained with.
 
