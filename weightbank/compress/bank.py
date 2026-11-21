@@ -13,11 +13,10 @@ from scipy.spatial.distance import squareform
 from torch import Tensor, nn
 
 from weightbank.compress.lm import Dense, FeedForward, Lm, Matrix
-from weightbank.model import pick
+from weightbank.model import ModelConfig, Routed, ScoreRouter
 
 FLOAT_BITS = 16
 GROUP = 64
-ROUTER_WIDTH = 64
 PRIOR = 8.0
 FIT_ROUNDS = 4
 
@@ -103,7 +102,8 @@ def scrambled(layers: list[Tensor], generator: torch.Generator) -> list[Tensor]:
 
 def shared_energy(layers: list[Tensor]) -> list[float]:
     """Share of the layers' summed squared weights that the best k shared directions hold, for
-    every k: the most any scheme that writes each layer as a mix of k shared matrices can keep."""
+    every k: the most a scheme that writes each layer, hidden units in the order given, as a mix
+    of k shared matrices can keep."""
     flat = torch.stack([layer.flatten() for layer in layers]).double()
     spectrum = torch.linalg.eigvalsh(flat @ flat.T).flip(0).clamp(min=0)
     return [float(share) for share in spectrum.cumsum(0) / spectrum.sum()]
@@ -113,8 +113,9 @@ def groups(similarity: np.ndarray, count: int) -> list[int]:
     if count >= len(similarity):
         return list(range(len(similarity)))
     distance = squareform(1 - similarity, checks=False)
-    labels = fcluster(linkage(distance, method="average"), count, criterion="maxclust")
-    return [int(label) - 1 for label in labels]
+    labels = [int(label) - 1 for label in fcluster(linkage(distance, method="average"), count, criterion="maxclust")]
+    assert len(set(labels)) == count
+    return labels
 
 
 @dataclass
@@ -236,22 +237,16 @@ def weight_error(model: Lm, student: Lm) -> float:
     return lost / kept
 
 
-class Router(nn.Module):
-    """The score router of weightbank.model, plus a per-layer prior that starts every layer on
-    the bank matrix the fit assigned it."""
+class Router(ScoreRouter):
+    """The score router with a per-layer prior that starts every layer on the bank step the fit
+    assigned it."""
 
     def __init__(self, width: int, assignment: list[int], chunks: int) -> None:
-        super().__init__()
-        self.data = nn.Linear(width, ROUTER_WIDTH)
-        self.asker = nn.Parameter(torch.randn(len(assignment), ROUTER_WIDTH) * 0.02)
-        self.score = nn.Linear(ROUTER_WIDTH, chunks)
-        nn.init.normal_(self.score.weight, std=0.02)
-        nn.init.zeros_(self.score.bias)
+        super().__init__(ModelConfig(len(assignment), width), Routed(chunks))
         self.prior = nn.Parameter(PRIOR * F.one_hot(torch.tensor(assignment), chunks).float())
 
-    def forward(self, x: Tensor, layer: int) -> Tensor:
-        logits = self.score(torch.tanh(self.data(x) + self.asker[layer])) + self.prior[layer]
-        return pick(logits.float(), self.training, self.training).hard
+    def logits(self, x: Tensor, module: int) -> Tensor:
+        return super().logits(x, module) + self.prior[module]
 
 
 class RoutedFeedForward(nn.Module):
@@ -272,7 +267,7 @@ class RoutedFeedForward(nn.Module):
         self.picked: Tensor | None = None
 
     def forward(self, x: Tensor) -> Tensor:
-        picks = self.router(x, self.layer)
+        picks = self.router(x, self.layer).hard
         self.picked = picks.detach().argmax(-1)
         gate_fix, up_fix, down_fix = self.corrections or (None, None, None)
         out: Tensor | None = None

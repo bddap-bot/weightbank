@@ -1,3 +1,4 @@
-from weightbank.compress.run import main
+from weightbank.compress import report, run
 
-main()
+run.main()
+report.main()

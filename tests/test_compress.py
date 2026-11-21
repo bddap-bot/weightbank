@@ -8,7 +8,8 @@ import torch
 from torch import Tensor
 
 from weightbank.compress import bank, heal, lm, run
-from weightbank.compress.run import Arm
+from weightbank.compress.run import Arm, Full, Trial
+from weightbank.data import windows
 
 WIDTH = 18
 HIDDEN = 64
@@ -194,7 +195,7 @@ def test_truncate_is_the_best_low_rank_matrix() -> None:
     matrix = torch.randn(12, 8, generator=torch.Generator().manual_seed(0))
     spectrum = torch.linalg.svdvals(matrix)
     lost = (matrix - bank.truncate(matrix, 3).dense()).pow(2).sum()
-    assert float(lost) == pytest.approx(float(spectrum[3:].pow(2).sum()), rel=1e-4)
+    assert float(lost.detach()) == pytest.approx(float(spectrum[3:].pow(2).sum()), rel=1e-4)
 
 
 def test_routed_model_starts_as_the_fixed_bank() -> None:
@@ -263,7 +264,7 @@ def test_perplexity_of_a_uniform_model_is_the_vocabulary() -> None:
 
 
 def test_windows_predict_the_next_token() -> None:
-    inputs, targets = lm.windows(torch.arange(11), context=5)
+    inputs, targets = windows(torch.arange(11), 5)
     assert inputs.tolist() == [[0, 1, 2, 3, 4], [5, 6, 7, 8, 9]]
     assert targets.tolist() == [[1, 2, 3, 4, 5], [6, 7, 8, 9, 10]]
 
@@ -293,13 +294,15 @@ def test_heal_in_single_rows_matches_whole_batches(monkeypatch: pytest.MonkeyPat
 
 def record(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, losses: dict[float, float]) -> None:
     monkeypatch.setattr(run, "RUNS", tmp_path)
+    chunks, rank = run.SWEEP_BANK
     for rate, loss in losses.items():
-        run.write(Arm("bank", *run.SWEEP_BANK, sweep_rate=rate).path, {"rate": rate, "validation_perplexity": loss})
+        held = {"kind": "bank", "chunks": chunks, "rank": rank, "seed": 0, "steps": run.SWEEP_STEPS, "rate": rate}
+        run.write(Arm("bank", chunks, rank, Trial(rate)).path, held | {"validation_perplexity": loss})
 
 
 def test_sweep_starts_with_the_first_rates(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     record(monkeypatch, tmp_path, {})
-    assert [arm.sweep_rate for arm in run.sweep("bank")] == list(run.FIRST_RATES)
+    assert [arm.rate for arm in run.sweep("bank")] == list(run.FIRST_RATES)
 
 
 def test_sweep_stops_when_the_best_rate_is_inside(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -311,11 +314,11 @@ def test_sweep_stops_when_the_best_rate_is_inside(monkeypatch: pytest.MonkeyPatc
 
 def test_sweep_extends_past_a_best_rate_at_the_edge(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     record(monkeypatch, tmp_path, dict(zip(run.FIRST_RATES, (9.0, 8.0, 7.0, 6.0))))
-    assert [arm.sweep_rate for arm in run.sweep("bank")] == [run.LADDER[5]]
+    assert [arm.rate for arm in run.sweep("bank")] == [run.LADDER[5]]
     record(monkeypatch, tmp_path, {run.LADDER[5]: 6.5})
     assert run.sweep("bank") == []
     record(monkeypatch, tmp_path, dict(zip(run.FIRST_RATES, (5.0, 8.0, 9.0, 9.5))))
-    assert [arm.sweep_rate for arm in run.sweep("bank")] == [run.LADDER[0]]
+    assert [arm.rate for arm in run.sweep("bank")] == [run.LADDER[0]]
 
 
 def test_plan_pairs_every_bank_with_both_controls() -> None:
@@ -324,3 +327,79 @@ def test_plan_pairs_every_bank_with_both_controls() -> None:
     for chunks, rank in run.BANKS:
         assert {arm.kind for arm in arms if (arm.chunks, arm.rank, arm.seed) == (chunks, rank, 0)} >= set(run.FIXED)
     assert sum(arm.kind == "routed" for arm in arms) == 1
+
+
+def test_a_diverged_rate_is_never_chosen(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    record(monkeypatch, tmp_path, dict(zip(run.FIRST_RATES, (float("nan"), 5.0, 7.0, float("inf")))))
+    assert run.chosen_rate("bank") == run.FIRST_RATES[1]
+
+
+def test_a_record_of_another_plan_is_refused(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    record(monkeypatch, tmp_path, {run.FIRST_RATES[0]: 5.0})
+    arm = Arm("bank", *run.SWEEP_BANK, Trial(run.FIRST_RATES[0]))
+    assert arm.read()["validation_perplexity"] == 5.0
+    run.write(arm.path, arm.read() | {"steps": run.SWEEP_STEPS + 1})
+    with pytest.raises(ValueError):
+        arm.read()
+
+
+def test_paths_tell_trials_and_seeds_apart() -> None:
+    paths = {Arm("bank", 8, 16, budget).path for budget in (Full(), Full(1), Trial(1e-3), Trial(3e-3))}
+    assert len(paths) == 4
+
+
+def test_fit_centre_is_the_mean_of_its_members() -> None:
+    generator = torch.Generator().manual_seed(0)
+    first, second = (torch.randn(HIDDEN, 3 * WIDTH, generator=generator) for _ in range(2))
+    fitted = bank.fit([first, second], [0, 0], 0, matched=False)
+    assert torch.allclose(fitted.centres[0], (first + second) / 2, atol=1e-6)
+
+
+def test_routed_training_pass_is_the_fixed_bank_when_the_prior_decides() -> None:
+    model = tiny()
+    fitted = bank.fit(layers_of(model), pairs(5), 4, matched=True)
+    routed = bank.routed(model, fitted).train()
+    step = routed.block(0).feed_forward
+    assert isinstance(step, bank.RoutedFeedForward)
+    with torch.no_grad():
+        step.router.prior.mul_(1e4)
+    assert torch.allclose(routed(tokens()), bank.banked(model, fitted)(tokens()), atol=1e-4)
+
+
+def test_schedule_warms_up_then_decays_to_zero() -> None:
+    assert heal.schedule(0, 100) == pytest.approx(0.2)
+    assert heal.schedule(4, 100) == pytest.approx(1.0)
+    assert heal.schedule(52, 100) == pytest.approx(0.5, abs=0.02)
+    assert heal.schedule(99, 100) < 0.01
+
+
+def test_rotate_turns_each_pair_by_its_position() -> None:
+    x = torch.tensor([1.0, 0.0]).expand(3, 2)
+    angle = torch.arange(3.0)
+    assert torch.allclose(lm.rotate(x), torch.stack([angle.cos(), angle.sin()], dim=1), atol=1e-6)
+
+
+def test_query_heads_read_their_own_key_value_head() -> None:
+    block = tiny().block(0)
+    head = WIDTH // lm.HEADS
+    group = lm.HEADS // lm.KEY_VALUE_HEADS * head
+    with torch.no_grad():
+        block.value.weight[head:].zero_()
+        block.out.weight.copy_(torch.eye(WIDTH))
+    out = block.attend(torch.randn(1, 6, WIDTH, generator=torch.Generator().manual_seed(0)))
+    assert bool(out[..., :group].abs().sum() > 0) and bool((out[..., group:] == 0).all())
+
+
+def test_a_later_token_changes_no_earlier_prediction() -> None:
+    model = tiny()
+    first = tokens()
+    second = first.clone()
+    second[:, -1] = (second[:, -1] + 1) % VOCAB
+    assert torch.allclose(model(first)[:, :-1], model(second)[:, :-1], atol=1e-6)
+    assert not torch.allclose(model(first)[:, -1], model(second)[:, -1], atol=1e-6)
+
+
+def test_normalise_scales_to_unit_size_times_its_weight() -> None:
+    x = torch.tensor([[3.0, 4.0]])
+    out = lm.normalise(x, torch.tensor([2.0, 0.5]))
+    assert torch.allclose(out, torch.tensor([[2 * 3.0, 0.5 * 4.0]]) / 12.5**0.5, atol=1e-4)

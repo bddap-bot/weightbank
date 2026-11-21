@@ -11,20 +11,36 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.axes import Axes
+from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.lines import Line2D
 
 from weightbank.compress.lm import LAYERS
-from weightbank.compress.run import BANKS, BITS, EXTRA_SEEDS, FIXED, LADDER, ROUTED_BANK, RUNS, STEPS, SWEEP_BANK, Arm, Kind, read
+from weightbank.compress.run import (
+    BANKS,
+    BITS,
+    EXTRA_SEEDS,
+    FIXED,
+    LADDER,
+    ROUTED_BANK,
+    RUNS,
+    STEPS,
+    SWEEP_BANK,
+    Arm,
+    Full,
+    Kind,
+    Trial,
+    chosen_rate,
+    plan,
+    read,
+    trials,
+)
+from weightbank.report import GRID, INK, MUTED, SURFACE, table
 
 TEMPLATE = Path("compress.in.md")
 REPORT = Path("compress.md")
 CHART = Path("compress-chart.png")
 SIMILARITY = Path("compress-similarity.png")
 
-SURFACE = "#fcfcfb"
-INK = "#0b0b0b"
-MUTED = "#52514e"
-GRID = "#e4e3df"
 COLOUR: dict[Kind, str] = {"bank": "#2a78d6", "low-rank": "#eb6834", "low-rank-kept": "#1baf7a", "routed": "#eda100"}
 LABEL: dict[Kind, str] = {
     "bank": "shared bank",
@@ -46,11 +62,6 @@ def figure(value: float) -> str:
     return f"{value:,.0f}" if value >= 1000 else f"{value:.2f}"
 
 
-def table(header: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
-    lines = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
-    return "\n".join(lines + ["| " + " | ".join(row) + " |" for row in rows])
-
-
 def off_diagonal(matrix: Sequence[Sequence[float]]) -> list[float]:
     return [matrix[first][second] for first in range(len(matrix)) for second in range(first)]
 
@@ -70,8 +81,7 @@ def original_table(original: dict[str, Any]) -> str:
 
 
 def arms() -> list[Arm]:
-    listed = [Arm(kind, chunks, rank) for chunks, rank in BANKS for kind in FIXED]
-    return listed + [Arm("routed", *ROUTED_BANK)]
+    return [arm for arm in plan() if arm.seed == 0]
 
 
 def shared_layers(record: dict[str, Any]) -> int:
@@ -89,7 +99,7 @@ def layout(arm: Arm, record: dict[str, Any]) -> str:
 def arms_table() -> str:
     rows = []
     for arm in arms():
-        record = read(arm.path)
+        record = arm.read()
         rows.append(
             [
                 f"{LABEL[arm.kind]}, {arm.chunks}/{arm.rank}",
@@ -120,7 +130,7 @@ def arms_table() -> str:
 def versus_table() -> str:
     rows = []
     for chunks, rank in BANKS:
-        records = {kind: read(Arm(kind, chunks, rank).path) for kind in FIXED}
+        records = {kind: Arm(kind, chunks, rank).read() for kind in FIXED}
         healed = {kind: records[kind]["healed_perplexity"]["16"] for kind in FIXED}
         rows.append(
             [
@@ -149,7 +159,7 @@ def assignment_table() -> str:
     rows = []
     for chunks in sorted({chunks for chunks, _ in BANKS}):
         rank = next(rank for size, rank in BANKS if size == chunks)
-        assignment: list[int] = read(Arm("bank", chunks, rank).path)["assignment"]
+        assignment: list[int] = Arm("bank", chunks, rank).read()["assignment"]
         groups = [[layer for layer in range(LAYERS) if assignment[layer] == chunk] for chunk in sorted(set(assignment))]
         shared = sorted((group for group in groups if len(group) > 1), key=lambda group: group[0])
         rows.append([str(chunks), "; ".join(", ".join(map(str, group)) for group in shared)])
@@ -159,7 +169,7 @@ def assignment_table() -> str:
 def unmatched_table() -> str:
     rows = []
     for chunks, rank in BANKS:
-        record = read(Arm("bank", chunks, rank).path)
+        record = Arm("bank", chunks, rank).read()
         rows.append([f"{chunks}/{rank}", f"{record['unmatched_weight_error']:.3f}", f"{record['weight_error']:.3f}"])
     return table(["bank size/rank", "weight error, units as published", "weight error, units matched"], rows)
 
@@ -168,7 +178,7 @@ def seeds_table() -> str:
     rows = []
     for kind in FIXED:
         values = [
-            read(Arm(kind, *SWEEP_BANK, seed=seed).path)["healed_perplexity"]["16"] for seed in (0, *EXTRA_SEEDS)
+            Arm(kind, *SWEEP_BANK, Full(seed)).read()["healed_perplexity"]["16"] for seed in (0, *EXTRA_SEEDS)
         ]
         rows.append([LABEL[kind], *(figure(value) for value in values), figure(fmean(values))])
     return table(["arm", *(f"seed {seed}" for seed in (0, *EXTRA_SEEDS)), "mean"], rows)
@@ -177,26 +187,23 @@ def seeds_table() -> str:
 def sweep_table() -> str:
     rows = []
     for kind in FIXED:
-        cells = []
-        records = {rate: Arm(kind, *SWEEP_BANK, sweep_rate=rate).path for rate in LADDER}
-        best = min(
-            (read(path)["validation_perplexity"], rate) for rate, path in records.items() if path.exists()
-        )[1]
-        for rate, path in records.items():
-            cell = figure(read(path)["validation_perplexity"]) if path.exists() else ""
-            cells.append(f"**{cell}**" if rate == best else cell)
+        tried = trials(kind)
+        cells = [figure(tried[rate].read()["validation_perplexity"]) if rate in tried else "" for rate in LADDER]
+        best = LADDER.index(chosen_rate(kind))
+        cells[best] = f"**{cells[best]}**"
         rows.append([LABEL[kind], *cells])
     return table(["arm", *(f"{rate:g}" for rate in LADDER)], rows)
 
 
 def routed_table() -> str:
     rows = []
-    for kind in ("bank", "routed", "low-rank-kept", "low-rank"):
-        record = read(Arm(kind, *ROUTED_BANK).path)  # type: ignore[arg-type]
+    kinds: tuple[Kind, ...] = ("bank", "routed", "low-rank-kept", "low-rank")
+    for kind in kinds:
+        record = Arm(kind, *ROUTED_BANK).read()
         moved = f"{100 * record['off_assignment']:.1f}%" if "off_assignment" in record else ""
         rows.append(
             [
-                LABEL[kind],  # type: ignore[index]
+                LABEL[kind],
                 megabytes(record["bytes"]["16"]),
                 figure(record["fit_perplexity"]),
                 figure(record["healed_perplexity"]["16"]),
@@ -271,7 +278,7 @@ def chart(original: dict[str, Any]) -> None:
         frontier(axes, original)
     highest = 0.0
     for arm in arms():
-        record = read(arm.path)
+        record = arm.read()
         size, before, after = record["bytes"]["16"], record["fit_perplexity"], record["healed_perplexity"]
         whole.plot([size / 1e6] * 2, [before, after["16"]], color=COLOUR[arm.kind], linewidth=1, alpha=0.6, zorder=1)
         mark(whole, size, before, arm.kind, 16, healed=False)
@@ -310,7 +317,7 @@ def chart(original: dict[str, Any]) -> None:
         Line2D([], [], marker="o", linestyle="none", markersize=8, color=COLOUR[kind], label=LABEL[kind])
         for kind in COLOUR
     ]
-    kinds.append(Line2D([], [], marker="o", markersize=8, color=INK, linewidth=2, label="original model, quantized"))
+    kinds.append(Line2D([], [], marker="o", markersize=8, color=INK, linewidth=2, label="original model, rounded to 8 and 4 bits, not healed"))
     states = [
         Line2D([], [], marker="o", linestyle="none", markersize=8, markerfacecolor=SURFACE, markeredgecolor=MUTED, markeredgewidth=1.6, label="before healing"),
         Line2D([], [], marker="o", linestyle="none", markersize=8, color=MUTED, label="after healing"),
@@ -335,8 +342,6 @@ def chart(original: dict[str, Any]) -> None:
 
 
 def similarity_chart(similarity: dict[str, Any]) -> None:
-    from matplotlib.colors import LinearSegmentedColormap
-
     canvas, panels = plt.subplots(1, 3, figsize=(14, 4.8), dpi=160, facecolor=SURFACE, width_ratios=(1, 1, 1.1))
     colours = LinearSegmentedColormap.from_list("blues", BLUES)
     matched = np.asarray(similarity["matched"])
@@ -364,7 +369,7 @@ def similarity_chart(similarity: dict[str, Any]) -> None:
     energy.plot(counts, [count / LAYERS for count in counts], color=MUTED, linewidth=2, linestyle=(0, (4, 3)))
     energy.plot(counts, similarity["shared_energy"], color=COLOUR["bank"], linewidth=2)
     energy.annotate("this model", (20, similarity["shared_energy"][19]), textcoords="offset points", xytext=(-10, 12), ha="right", color=INK, fontsize=9)
-    energy.annotate("unrelated layers", (20, 20 / LAYERS), textcoords="offset points", xytext=(10, -16), color=INK, fontsize=9)
+    energy.annotate("equal, unrelated layers", (20, 20 / LAYERS), textcoords="offset points", xytext=(10, -16), color=INK, fontsize=9)
     energy.set_title("Weight energy the best k shared matrices hold", color=INK, fontsize=11, loc="left")
     energy.set_xlabel("shared matrices, k", color=MUTED, fontsize=10)
     energy.set_ylabel("share of squared feed-forward weights", color=MUTED, fontsize=10)

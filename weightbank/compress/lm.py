@@ -14,14 +14,14 @@ from safetensors.torch import load_file
 from tokenizers import Tokenizer
 from torch import Tensor, nn
 
+from weightbank.data import windows
+
 MODEL = "HuggingFaceTB/SmolLM2-135M"
 MODEL_URL = f"https://huggingface.co/{MODEL}/resolve/93efa2f097d58c2a74874c7e644dbc9b0cee75a2/"
 TEXT_URL = "https://huggingface.co/datasets/Salesforce/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/"
 DATA = Path("data/compress")
 
 LAYERS = 30
-WIDTH = 576
-HIDDEN = 1536
 HEADS = 9
 KEY_VALUE_HEADS = 3
 ROTARY_BASE = 100000.0
@@ -183,7 +183,7 @@ def load(device: torch.device) -> Lm:
 
 
 def tokens(source: Download, limit: int | None = None) -> Tensor:
-    cache = source.path.with_suffix(".npy")
+    cache = source.path.with_suffix(f".{limit}.npy")
     if not cache.exists():
         tokenizer = Tokenizer.from_file(str(TOKENIZER.fetch()))
         lines: list[str] = pyarrow.parquet.read_table(source.fetch()).column("text").to_pylist()
@@ -199,18 +199,11 @@ def tokens(source: Download, limit: int | None = None) -> Tensor:
     return torch.from_numpy(np.load(cache))
 
 
-def windows(text: Tensor, context: int = CONTEXT) -> tuple[Tensor, Tensor]:
-    count = (len(text) - 1) // context
-    inputs = text[: count * context].view(count, context).long()
-    targets = text[1 : count * context + 1].view(count, context).long()
-    return inputs, targets
-
-
 @torch.no_grad()
 def perplexity(model: Lm, text: Tensor, batch: int = 8) -> float:
     model.eval()
     device = next(model.parameters()).device
-    inputs, targets = windows(text)
+    inputs, targets = windows(text, CONTEXT)
     total = 0.0
     for start in range(0, len(inputs), batch):
         with torch.autocast(device.type, dtype=torch.float16, enabled=device.type == "cuda"):
