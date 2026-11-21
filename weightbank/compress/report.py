@@ -58,13 +58,14 @@ LABEL: dict[Kind, str] = {
 }
 MARKER = {16: "o", 8: "s", 6: "D", 5: "p", 4: "^", 3: "v"}
 NOTE = {
-    16: (0, -16, "center"),
+    16: (6, -16, "right"),
     8: (0, -16, "center"),
     6: (0, -16, "center"),
     5: (0, -16, "center"),
     4: (-9, -12, "right"),
     3: (10, -4, "left"),
 }
+SIZE: dict[Kind, float] = {"bank": 6.0, "low-rank": 7.5, "low-rank-kept": 10.0, "routed": 13.0, "routed-soft": 7.5}
 BLUES = ("#fcfcfb", "#cde2fb", "#86b6ef", "#3987e5", "#1c5cab", "#0d366b")
 
 
@@ -269,12 +270,12 @@ def mark(axes: Axes, x: float, y: float, kind: Kind, bits: int, healed: bool) ->
         [x / 1e6],
         [y],
         marker=MARKER[bits],
-        markersize=7.5,
+        markersize=SIZE[kind],
         markerfacecolor=COLOUR[kind] if healed else SURFACE,
         markeredgecolor=SURFACE if healed else COLOUR[kind],
         markeredgewidth=1.0 if healed else 1.6,
         linestyle="none",
-        zorder=5 if kind == "bank" else 3,
+        zorder=20 - SIZE[kind],
     )
 
 
@@ -298,11 +299,22 @@ def chart(original: dict[str, Any]) -> None:
         size, before, after = record["bytes"]["16"], record["fit_perplexity"], record["healed_perplexity"]
         whole.plot([size / 1e6] * 2, [before, after["16"]], color=COLOUR[arm.kind], linewidth=1, alpha=0.6, zorder=1)
         mark(whole, size, before, arm.kind, 16, healed=False)
+        if arm.kind == "low-rank":
+            whole.annotate(
+                f"{arm.chunks}/{arm.rank}",
+                (size / 1e6, 2.5e8),
+                rotation=90,
+                ha="right" if arm.rank == min(rank for _, rank in BANKS) else "left",
+                va="bottom",
+                color=MUTED,
+                fontsize=8,
+            )
         mark(whole, size, after["16"], arm.kind, 16, healed=True)
         for bits in BITS:
             mark(detail, record["bytes"][str(bits)], after[str(bits)], arm.kind, bits, healed=True)
             highest = max(highest, after[str(bits)])
-    whole.set_title("Before and after healing, 16-bit weights", color=INK, fontsize=11, loc="left")
+    whole.set_ylim(10, 6e9)
+    whole.set_title("Before and after healing, 16-bit weights; labels are bank size/rank", color=INK, fontsize=11, loc="left")
     whole.set_ylabel("perplexity on WikiText-2 test, lower is better", color=MUTED, fontsize=10)
     detail.set_title("After healing, stored at 16, 8 and 4 bits", color=INK, fontsize=11, loc="left")
     highest = max(highest, original["perplexity"]["3"])
@@ -333,7 +345,7 @@ def chart(original: dict[str, Any]) -> None:
         Line2D([], [], marker=MARKER[bits], linestyle="none", markersize=8, color=MUTED, label=f"{bits}-bit")
         for bits in BITS
     ]
-    canvas.legend(handles=kinds, loc="lower left", bbox_to_anchor=(0.04, 0.0), ncols=5, frameon=False, fontsize=9, labelcolor=INK)
+    canvas.legend(handles=kinds, loc="lower left", bbox_to_anchor=(0.04, 0.0), ncols=3, frameon=False, fontsize=9, labelcolor=INK)
     whole.legend(handles=states, loc="upper left", frameon=False, fontsize=9, labelcolor=INK)
     detail.legend(handles=widths, loc="upper right", frameon=False, fontsize=9, labelcolor=INK)
     canvas.suptitle(
@@ -343,7 +355,7 @@ def chart(original: dict[str, Any]) -> None:
         x=0.04,
         ha="left",
     )
-    canvas.tight_layout(rect=(0, 0.05, 1, 0.97))
+    canvas.tight_layout(rect=(0, 0.07, 1, 0.97))
     canvas.savefig(CHART, facecolor=SURFACE)
     plt.close(canvas)
 

@@ -4,7 +4,9 @@ The aim of this project is an improvement other people can adopt in their own mo
 [first report](report.md) trains small models from scratch with a shared bank. This one is a
 second, cheaper track beside it: take a published, already-trained language model, replace its
 30 feed-forward steps with a bank of fewer shared ones, and ask what that costs in quality per
-stored byte against the things people already do to shrink a model.
+stored byte against the things people already do to shrink a model. An arm below is one
+compressed model; healing is a brief fine-tune of the compressed weights to match the
+original model's outputs.
 
 Every table below is written by `python -m weightbank.compress` from the files in
 `runs/compress/`. Quality is perplexity on the WikiText-2 test split; lower is better.
@@ -15,21 +17,23 @@ Every table below is written by `python -m weightbank.compress` from the files i
    cuts it from 269 to 93 MB at perplexity 23.1 (from 20.8), while the best bank arm reaches
    only 240 MB at 23.8; every bank arm at 16 or 8 bits is beaten by plain rounding at fewer
    bytes.
-2. The bank does beat low rank on every layer, by 15 to 24% of perplexity at equal bytes, but
-   that is nearly all from leaving some layers whole: against a control that keeps the same
-   layers whole and shares nothing, sharing is worth 0 to 2%. A per-input router over the
-   bank added nothing.
-3. This model's layers have almost nothing in common to share (cosine 0.0007 as published),
-   so this is a negative result for retrofitting a bank onto weights trained apart, and says
-   nothing against a bank a model is trained with from the start.
+2. The bank does beat low rank on every layer, with 15 to 24% lower perplexity at equal
+   bytes, but nearly all of that comes from leaving some layers whole: against a control that
+   keeps the same layers whole and shares nothing, sharing is worth 0 to 2%. A per-input
+   router over the bank, tried at one size, added nothing.
+3. This model's layers have almost nothing in common to share: cosine 0.0007 as published,
+   and 0.089 with hidden units matched against 0.079 for scrambled layers. This is a negative
+   result for retrofitting a bank onto weights trained apart, and says nothing against a
+   bank a model is trained with from the start.
 
 ![Stored bytes against perplexity for every arm](compress-chart.png)
 
-Left: every arm before healing (hollow) and after (filled), at 16-bit weights; the weights-only
-fit alone leaves no usable model, and healing recovers most of it. Right: the healed arms
-stored at 16, 8 and 4 bits, with the original model rounded to 8, 6, 5, 4 and 3 bits as the
-black line. The shared bank (blue) is drawn over the same-layers control (green) and hides it where
-the two coincide, which is at most points.
+Left: every arm before healing (hollow) and after (filled), at 16-bit weights, labelled by
+bank size/rank; the weights-only fit alone leaves perplexity between 140 and 10^8, and healing
+recovers most of it. Right: the healed arms stored at 16, 8 and 4 bits, with the original model rounded to
+8, 6, 5, 4 and 3 bits as the black line. Arms that land on the same point are drawn as rings:
+the shared bank is the small blue mark, and it sits inside the green same-layers control at
+most sizes and inside the yellow routed bank at 8/64.
 
 ## What a negative result here does not show
 
@@ -38,8 +42,7 @@ afterwards. The layers of this model were never asked to share anything, and the
 below finds that they do not. A model trained from scratch with a shared bank can arrange its
 layers so that sharing fits, which is what the fixed map in the [first report](report.md)
 does, at a lower loss than a plain model of the same stored size. So a loss here is a
-statement about retrofitting one trained model. It is not a verdict on shared weight banks,
-and the from-scratch experiments continue.
+statement about retrofitting one trained model. It is not a verdict on shared weight banks.
 
 ## Setup
 
@@ -56,8 +59,11 @@ that step with another layer, keeps a rank-r correction added to each of the thr
 A layer alone on its bank step is stored whole and gets no correction. Attention, norms and
 the embedding are untouched.
 
-**Fit, weights only.** Layers are grouped by average-linkage clustering of their pairwise
-similarity, then each group alternates between its bank step (the mean of its members less
+**Fit, weights only.** The hidden units of a feed-forward step can be reordered without
+changing what it computes, so two layers are compared, and later averaged, with their units
+matched: the one-to-one pairing that maximises the inner product of their weights. Layers are
+grouped by average-linkage clustering of their pairwise similarity after matching, then each
+group alternates between its bank step (the mean of its members less
 their corrections) and the corrections (the best rank-r matrix for what the bank step leaves),
 minimising squared weight error.
 
@@ -90,6 +96,8 @@ width. The table of which layer uses which bank step (30 bytes) is not counted.
 
 ![Layer similarity and shared energy](compress-similarity.png)
 
+The three squares compare every pair of the 30 layers (a layer with itself is left blank).
+
 {similarity}
 
 Before any fit, the layers of this model have nothing to share. With hidden units in the
@@ -97,8 +105,8 @@ order published, the cosine between two layers' feed-forward weights averages 0.
 exceeds 0.006; the four attention matrices are no closer (at most 0.021). The order of a layer's hidden units is
 arbitrary, so the fair comparison first matches each layer's units to the other's (the
 assignment that maximises their inner product). That lifts the mean to 0.089, but the same
-matching applied to scrambled layers, which have each layer's values and no relation between
-layers, already gives 0.079: most of the similarity is made by the matching. What is left is a
+matching applied to scrambled layers (every column's values shuffled among the hidden units,
+so each layer keeps its values and loses any relation to the others) already gives 0.079: most of the similarity is made by the matching. What is left is a
 band of neighbouring layers in the middle of the model, at most 0.133 between two layers. The
 right panel says the same thing without choosing an order: the best k shared matrices can
 hold barely more of the 30 layers' weights than k/30, the line for layers of equal size with
@@ -123,18 +131,19 @@ Against low rank on every layer the bank is ahead at every size, with 15 to 24% 
 perplexity at equal bytes. Almost all of that is the layout and not the sharing: the bank's
 grouping leaves 3, 9 or 20 layers whole and concentrates the damage in the rest, and a model
 that keeps the same layers whole and spends the same bytes on separate low-rank layers lands
-within 2% of the bank at every size. What sharing itself adds is that last column: between
+within 2.2% of the bank at every size. What sharing itself adds is that last column: between
 nothing and 2%.
 
 **Stacked with quantization.** Rounding a healed arm to 8 bits costs it nothing, as it costs
 the original nothing. At 4 bits the healed arms lose 24 to 51% of perplexity where the
 original loses 53%. No arm at 4 bits is better than the original at 4 bits (31.8 at 76 MB),
-but the stacked arms are the only models measured below 76 MB that still work: the bank at
+but the stacked arms are the only models measured below the 4-bit original's 75.7 MB that
+still work: the bank at
 23/64 and 4 bits is 67.5 MB at 33.6, at 15/64 it is 58.1 MB at 38.6, while the original
 rounded to 3 bits is 58.9 MB at 421.6. That comparison flatters the stacked arms, which were
 healed, against a 3-bit original that was not; a calibrated 3-bit quantizer would be the fair
-opponent and was not run. At 4 bits the same-layers control runs from 2% ahead of the bank to
-11% behind it, and low rank on every layer 9 to 29% behind.
+opponent and was not run. At 4 bits the same-layers control's perplexity runs from 2% below the
+bank's to 11% above it, and that of low rank on every layer is 9 to 29% above it.
 
 Three seeds of the {sweep_bank} arms (the seed sets the healing batches):
 
@@ -150,36 +159,35 @@ Which layers share:
 
 ## The routed variant
 
-The fixed bank was not hopeless after healing, so the routed variant was run at 8 bank steps
-and rank 64. A router, the score router of the first report, picks one of the 8 bank steps for
+The routed variant was run at 8 bank steps and rank 64. A router, the score router of the first report, picks one of the 8 bank steps for
 every token at every layer; each layer keeps its corrections. A per-layer prior starts every
 layer on the bank step the fit assigned it, so before healing the routed model is exactly the
-fixed bank. It is healed the same way and at the same learning rate, sampling picks in
+shared bank with its fixed assignment. It is healed the same way and at the same learning rate, sampling picks in
 training and taking the highest score in evaluation. The router adds 0.08 MB.
 
-Two starts were run. With a strong prior (8, so a sampled pick leaves the assignment about
-once in 400) the router never moves: after healing, under one pick in a million is off the
-fixed assignment and perplexity is 36.98 against the fixed bank's 36.75. With a soft prior
+Two starts were run. With a strong prior (8 added to the assigned step's score, so a sampled
+pick leaves the assignment about once in 400) the router never moves: after healing, under one pick in a million is off the
+fixed assignment and perplexity is 36.98 against the shared bank's 36.75. With a soft prior
 (2, so training samples other bank steps about half the time) healing is worse, 41.53, and
-the router ends back on the assignment, with 0.1% of picks off it. Neither run found an input
-for which another layer's bank step is the better choice, and trying costs perplexity. That
+the router ends back on the assignment, with 0.1% of picks off it. Both runs end with the router on
+the fixed assignment, and sampling other bank steps on the way there costs perplexity. That
 agrees with the first report, where a per-token pick lost to the fixed map on the same banks.
 
 {routed}
 
 ## What changed from the plan, and why
 
-- **Hidden units are matched before sharing.** The plan fitted the bank to the weights as
-  published. The similarity measurement showed those have nothing in common (cosine 0.0007),
+- **Hidden units are matched before sharing.** The first design fitted the bank to the
+  weights as published. The similarity measurement showed those have nothing in common (cosine 0.0007),
   and that a feed-forward step's hidden units can be reordered freely without changing what it
   computes. Each layer's units are therefore reordered to line up with its bank step. It
-  lowers the fit's weight error at every size, by 5 to 8%:
+  lowers the fit's weight error at every size, by 5 to 7%:
 
 {unmatched}
 
 - **A layer alone on its bank step gets no correction.** Its bank step is the layer itself, so
   a correction would store bytes that reconstruct nothing.
-- **A second control.** The plan had one control, low rank on every layer. The bank turned out
+- **A second control.** The first design had one control, low rank on every layer. The bank turned out
   to beat it mostly by leaving some layers whole, which is not sharing, so the same-layers
   control was added to separate the two.
 - **Layer groups come from the similarity measurement** (clustering) and not from a search
@@ -208,7 +216,7 @@ Feed-Forward Sublayers for Compressed Transformers") match hidden units by permu
 merge and tie feed-forward steps of trained models. Basis Sharing (Wang et al., 2024) shares
 an SVD basis across adjacent layers with per-layer coefficients and reports better perplexity
 than per-layer SVD at 20 to 50% compression of LLaMA-7B, while leaving out the feed-forward
-down matrix because sharing it raised error. MASA (Zhussip et al., 2025) and LISA (Mu et al.,
+down matrix and the attention output matrix because sharing them raised error. MASA (Zhussip et al., 2025) and LISA (Mu et al.,
 2024) share attention weights across layers. Matching hidden units by permutation comes from
 model merging (Git Re-Basin, Ainsworth et al., 2022). Low rank alone is SVD-LLM (Wang et al.,
 2024) and ASVD (Yuan et al., 2023), both of which weight the error by activations, which the
@@ -224,21 +232,21 @@ credited to sharing is mostly a gain from uneven treatment of layers, is from on
 
 ## Limits
 
-- One model, and a small one. The papers above report sharing working on models fifty times
-  larger.
+- One model, and a small one. The papers above report sharing working on models of billions
+  of weights.
 - One evaluation, perplexity on WikiText-2, with healing on text from the same source
   (WikiText-103). The healed arms may have adapted to that text in a way the unhealed
   quantized original could not, which favours the healed arms.
-- Healing is short ({steps} steps, about 4 million tokens). The loss was still
-  falling in the last steps of every arm; a longer budget would lower all of them and could
-  reorder close ones.
+- Healing is short ({steps} steps, about 4 million tokens) with the learning rate annealed to
+  zero. A longer budget was not tried and could reorder arms that are close.
 - The learning rate was chosen once per kind of arm, at 500 steps on the {sweep_bank} size,
-  and used for every size at {steps} steps. The routed arms use the fixed bank's rate.
+  and used for every size at {steps} steps. The routed arms use the shared bank's rate
+  and were run at one size.
 - One seed everywhere except the {sweep_bank} size.
 - The fit minimises weight error with no data. Activation-weighted fits, as in SVD-LLM, would
   help both the bank and the low-rank controls.
-- The quantization baseline is rounding with no calibration; a stronger quantizer would move
-  the black line down, not up.
+- The quantization baseline is rounding with no calibration; a stronger quantizer would lower
+  the black line.
 - Only the feed-forward steps are banked. Attention matrices were measured (they are as
   unrelated as the feed-forward ones) but not shared.
 - Stored bytes are the measure. Speed and memory at run time were not measured; the low-rank
@@ -250,7 +258,8 @@ credited to sharing is mostly a gain from uneven treatment of layers, is from on
 nix-shell --run 'python -m weightbank.compress'
 ```
 
-It downloads the model and the text into `data/compress/` (checked against pinned SHA-256
-sums), runs every arm that `runs/compress/` lacks, and rewrites this report and its two
-charts. With `runs/compress/` as committed it only rewrites the report; delete that directory
-to run everything again, about seven hours on one RTX 2080.
+It needs Nix (`shell.nix` pins the environment), a CUDA GPU with 8 GB and about 430 MB of
+downloads, which go into `data/compress/` and are checked against pinned SHA-256 sums. It runs
+every arm that `runs/compress/` lacks and rewrites this report and its two charts. With
+`runs/compress/` as committed it only rewrites the report; delete that directory to run
+everything again, about seven hours on one RTX 2080.
