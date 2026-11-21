@@ -56,6 +56,12 @@
    "meaning": "training budget in optimizer steps; the tag is the directory under runs/",
    "default": 8000,
    "values": [[8000, "8000"], [32000, "32000"], [128000, "128000"]]
+  },
+  {
+   "name": "architecture",
+   "meaning": "the transformer around the banks: classic is learned positions, layer norms and a GELU feed-forward; modern is rotary positions, root-mean-square norms and a gated feed-forward",
+   "default": "classic",
+   "values": [["classic", "classic"], ["modern", "modern"]]
   }
  ],
  "hypotheses": [
@@ -68,6 +74,18 @@
     {
      "lower": {"shared": "both", "chunks": 1, "rank": 24, "steps": 32000},
      "higher": {"shared": "both", "chunks": 2, "steps": 32000}
+    }
+   ]
+  },
+  {
+   "id": "reuse-survives-the-modern-architecture",
+   "priority": 2,
+   "status": "open",
+   "statement": "The gain from reuse survives the modern architecture: with rotary positions, root-mean-square norms and a gated feed-forward, eight modules reusing four chunks still beat the plain model of four modules.",
+   "settle": [
+    {
+     "lower": {"shared": "both", "steps": 32000, "architecture": "modern"},
+     "higher": {"modules": 4, "steps": 32000, "architecture": "modern"}
     }
    ]
   },
