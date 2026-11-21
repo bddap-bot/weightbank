@@ -183,7 +183,7 @@ def load(device: torch.device) -> Lm:
 
 
 def tokens(source: Download, limit: int | None = None) -> Tensor:
-    cache = source.path.with_suffix(f".{limit}.npy")
+    cache = source.path.with_suffix(f".{limit or 'all'}.npy")
     if not cache.exists():
         tokenizer = Tokenizer.from_file(str(TOKENIZER.fetch()))
         lines: list[str] = pyarrow.parquet.read_table(source.fetch()).column("text").to_pylist()

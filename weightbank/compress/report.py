@@ -28,7 +28,6 @@ from weightbank.compress.run import (
     Arm,
     Full,
     Kind,
-    Trial,
     chosen_rate,
     plan,
     read,
