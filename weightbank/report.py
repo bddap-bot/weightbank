@@ -573,11 +573,11 @@ def panel(axes: Axes, budget: Budget, low: float, high: float, annotate: bool) -
         color=FIXED_LINE,
         linewidth=1.5,
         linestyle=(0, (4, 3)),
+        label="fixed map, no router (squares, chunks beside each)",
         zorder=3,
     )
     points: list[tuple[Summary, str, str, str, str | None]] = [
-        (summaries[name], FIXED_LINE, SURFACE, "s", "fixed map, no router (chunks beside each)" if chunks == 1 else None)
-        for chunks, name in FIXED_MAP.items()
+        (summaries[name], FIXED_LINE, SURFACE, "s", None) for name in FIXED_MAP.values()
     ]
     points += [(summaries[name], COLORS[name], COLORS[name], MARKERS[name], LABELS[name]) for name in PICKING]
     for summary, color, fill, marker, legend in points:
@@ -625,19 +625,28 @@ def chart(budget: Budget) -> None:
     figure, (whole, detail) = plt.subplots(1, 2, figsize=(13, 6.4), dpi=160, facecolor=SURFACE, width_ratios=(1, 1.25))
     panel(whole, budget, 0.85, 7.4, annotate=True)
     panel(detail, budget, 3.1, 7.0, annotate=True)
-    whole.set_ylabel("validation loss (nats per byte)", color=MUTED)
+    for axes in (whole, detail):
+        axes.set_ylabel("validation loss (nats per byte)", color=MUTED)
     whole.set_title("every size", color=MUTED, fontsize=10, loc="left")
     detail.set_title("3 to 7 million stored weights", color=MUTED, fontsize=10, loc="left")
     figure.suptitle(
-        f"Validation loss against stored weights, enwik8, {budget.steps:,} steps, {len(SEEDS)} seeds (bars and bands: lowest to highest)",
+        f"Validation loss against stored weights, enwik8, {budget.steps:,} steps, {len(SEEDS)} seeds (points and lines: mean; bars and bands: lowest to highest)",
         color=INK,
         fontsize=12,
         x=0.01,
         ha="left",
     )
     handles, labels = whole.get_legend_handles_labels()
-    figure.legend(handles, labels, loc="lower center", ncol=4, frameon=False, labelcolor=INK, fontsize=10)
-    figure.tight_layout(rect=(0, 0.09, 1, 0.96))
+    figure.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.025), ncol=4, frameon=False, labelcolor=INK, fontsize=10)
+    figure.text(
+        0.5,
+        0.005,
+        "The fixed map at 4 chunks and the three both-routed points store the same weights to within 1.2% and are drawn side by side.",
+        color=MUTED,
+        fontsize=9,
+        ha="center",
+    )
+    figure.tight_layout(rect=(0, 0.11, 1, 0.96))
     figure.savefig(CHART, facecolor=SURFACE)
 
 

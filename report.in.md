@@ -7,8 +7,9 @@ Two experiments are reported together. The first trained every configuration for
 at one learning rate (1e-3), three seeds. The second asks which of the first's gaps belong to
 the designs and which to a short or mis-tuned comparison: every configuration gets a learning
 rate chosen for it by sweeps, then three seeds at four times the budget (32,000 steps). The
-second also adds two families: two other routers for the model with both banks routed, and
-the fixed module-to-chunk map with no router at 1, 2, 4 and 8 chunks.
+second also adds configurations, trained at both budgets: two other routers for the model
+with both banks routed, the fixed module-to-chunk map with no router at 1 and 2 chunks beside
+the first experiment's 4 and 8, and the plain models they are compared with.
 A gap is a configuration's mean validation loss minus the better of the two plain curves read
 at its stored weights; negative means the configuration beats a plain model of its size.
 
@@ -23,7 +24,7 @@ seeds above the curve (+0.003 to +0.008), so at the long budget it is slightly w
 plain model of its size and no longer level with it; part of that is the plain curve, since
 at tuned rates the narrowed plain model became the better curve, and against the curve of
 fewer modules, the better one at the first budget, feed-forward routed sits at -0.001. The
-signs are therefore properties of the designs, while both routed lost three fifths of its
+signs of those three are therefore properties of the designs, while both routed lost three fifths of its
 gap, the fixed map half and attention routed a fifth to the longer budget and tuned rates:
 choosing a chunk per token costs loss against a plain model and against fixed sharing of the
 same weights, and fixed sharing is the only arrangement here that beats a plain model of
@@ -37,7 +38,8 @@ modules; the lighter line is the plain model cut from 8 modules to 1 at width 25
 bars run from the lowest to the highest of three seeds. The dashed line joins the fixed
 module-to-chunk map with no router at 1, 2, 4 and 8 chunks. The fixed map at 4 chunks and the
 three models with both banks routed store the same weights to within 1.2%; their four points
-are drawn side by side so that none hides another.
+are drawn side by side so that none hides another, which the chart notes under its panels.
+Points are means of three seeds.
 
 ## The gaps at both budgets
 
@@ -56,8 +58,9 @@ table changes the rate alone: the first budget, seed 0 only, with every configur
 and then at the best of the three rates tried for it at that budget (the short sweep below),
 both read against the plain curve the first-budget gap above uses. Each loss on the
 right-hand side is the lowest of three, and a one-seed gap carries about a seed spread of
-noise (0.002 to 0.008 in the per-configuration table); it can show a shift of the size of
-the two large gaps and not of the two small ones.
+noise (0.002 to 0.009 in the per-configuration table); it can show a shift of the size of
+the attention-routed and both-routed gaps and not one of the size of the feed-forward routed
+gap.
 
 {{rate-alone}}
 
@@ -109,20 +112,20 @@ finite is recorded with an infinite loss and loses.
 Limits of this choice: it is made on one seed, so where two rates differ by less than the
 seed spread the pick between them is arbitrary; and a winner that is the best short rate
 and leads by 0.005 or less has no rate tried beyond it, so a rate beyond it could be better
-by a similar amount. The two small gaps of the first experiment are of that size.
+by a similar amount. The feed-forward routed gap is of that size at both budgets.
 
 ## What was cut
 
 - The long sweep starts from two rates per configuration and adds more only under the rule
-  above. Three long rates for every configuration would have added about six hours of the
-  GPU.
+  above. Six configurations ended with two long rates; a third for each would have added
+  about three hours of the GPU.
 - `own-chunk` has no sweep of its own: it is the full control computed through the bank code,
   so it trains at the full control's rate, which keeps the two paired.
 - The two other routers were run for the model with both banks routed only. Feed-forward-only
   and attention-only versions of them would be four more configurations, about 21 hours of
   the GPU, and the both-routed pair already answers what they were added to ask.
-- No configuration was trained under another optimizer. A check of three configurations under
-  Muon, with its own rate sweeps, would have been about 12 more hours of the GPU.
+- No configuration was trained under another optimizer: a check under Muon would need its own
+  rate sweeps and long runs and was left out.
 
 ## Setup
 
@@ -173,8 +176,7 @@ by a similar amount. The two small gaps of the first experiment are of that size
   their module vectors, layer norms, embeddings and the output head.
 - Hardware: one RTX 2080, 8 GB, shared with other work, so wall times are indicative: a
   run slowed or paused by other work on the GPU counts that time. Runs
-  were trained one at a time: one run saturates this GPU (three plain runs at once each took
-  three times as long). During
+  were trained one at a time. During
   training a routed step computes every chunk for every token (the straight-through gradient
   needs them), which is why routed runs take longer; a hard pick needs only the picked chunk
   at inference, which this code does not exploit. `own-chunk` and `both-no-router` pay a
@@ -217,8 +219,8 @@ First budget, every one at 1e-3:
 Neither the sampling noise nor the router's form explains it. Removing the noise made the
 model worse at both budgets: `both-routed-argmax` is 0.014 above `both-routed` at the long
 budget (1.0459 against 1.0322, every seed) and 0.013 above it at the first, and its router
-ends far less decided (it gives its pick a probability of 0.51 to 0.56, where the sampled
-routers give 0.85 to 0.96), so the noise was helping the router commit and not costing loss.
+ends far less decided (it gives its pick a probability of 0.51 to 0.56, where the two sampled
+both-routed models give 0.85 to 0.96), so the noise was helping the router commit and not costing loss.
 Changing the form changed nothing: `both-routed-keys` ends at 1.0321, within 0.0001 of
 `both-routed`, and at the first budget it is 0.005 above it, inside its own seed sd of 0.009.
 All three routed models stay 0.019 to 0.033 above the fixed map at the long budget (0.045 to
@@ -233,7 +235,8 @@ The fixed map at 4 chunks is cycle sharing in the sense of Takase and Kiyono (20
 on Parameter Sharing across Layers in Transformers", arXiv:2104.06022): a stack of N layers
 applied repeatedly. At 1 chunk it is ALBERT-style sharing (Lan et al., 2020, "ALBERT: A Lite
 BERT for Self-supervised Learning of Language Representations"): one layer applied 8 times.
-At 8 chunks it is the full control. Each is set beside the plain model of as many modules as
+At 8 chunks it is the full control. Unlike both, every module here keeps its own layer norms.
+Each is set beside the plain model of as many modules as
 it has chunks, which stores the same chunks and applies each once, and beside the plain
 curve at its stored weights.
 
