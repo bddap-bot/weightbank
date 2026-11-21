@@ -39,8 +39,9 @@ bars run from the lowest to the highest of three seeds. The dashed line joins th
 module-to-chunk map with no router at 1, 2, 4 and 8 chunks. The fixed map at 4 chunks and the
 three models with both banks routed store the same weights to within 1.2%; their four points
 are drawn side by side so that none hides another, which the chart notes under its panels.
-Points are means of three seeds. A star is a cell tried by a round of the loop described
-next; it is drawn just right of its stored weights so that it hides no point of equal size.
+Points are means of three seeds. A star is a cell with three seeds at this budget beyond
+those of the first two experiments, so far the one the loop described next has tried; it is
+drawn just right of its stored weights so that it hides no point of equal size.
 
 ## The design space and the loop
 
@@ -49,8 +50,10 @@ its axes, every cell tried with the run files behind it, the hypotheses, and eac
 loop has run. The sections after it write up the two experiments that came before the loop. A cell is one value
 on every axis. A cell's name is the tags of its values that differ from the default, in the
 order of the axes, and `full` when none does; the training budget is the directory the run
-file sits in. Learning rate and seed are not axes: every cell gets its rate from the sweep
-described under "Choosing the learning rate" and is run at three seeds.
+file sits in. Learning rate and seed are not axes. A cell at the first budget is run at
+three seeds at one rate and swept over three rates at seed 0; a cell at a longer budget gets
+its rate from the sweep described under "Choosing the learning rate" and is then run at
+three seeds at that rate.
 
 ### Axes
 

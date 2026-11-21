@@ -77,6 +77,8 @@ DODGE = {NO_ROUTER: -9, "both-routed": 0, NOISE_FREE: 9, KEYS: 18}
 MARKERS = {"ff-routed": "D", "attn-routed": "D", "both-routed": "D", NOISE_FREE: "^", KEYS: "v"}
 assert LABELS.keys() == COLORS.keys() == MARKERS.keys() == set(PICKING)
 LATER_DODGE = 9
+LATER_SHADES = (5, 6, 4, 7, 0, 1, 2, 3)
+LEGEND_COLUMNS = 4
 
 
 @dataclass
@@ -688,7 +690,7 @@ def panel(axes: Axes, budget: Budget, later: Sequence[Row], ledger: Ledger, low:
             zorder=4,
         )
     for index, row in enumerate(later):
-        shade = matplotlib.colormaps["Dark2"](index % 8)
+        shade = matplotlib.colormaps["Dark2"](LATER_SHADES[index % len(LATER_SHADES)])
         losses = row.losses
         assert losses is not None
         mean = fmean(losses)
@@ -747,7 +749,7 @@ def chart(budget: Budget, ledger: Ledger) -> None:
         ha="left",
     )
     handles, labels = whole.get_legend_handles_labels()
-    figure.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.025), ncol=4, frameon=False, labelcolor=INK, fontsize=10)
+    figure.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.025), ncol=LEGEND_COLUMNS, frameon=False, labelcolor=INK, fontsize=10)
     figure.text(
         0.5,
         0.005,
@@ -757,7 +759,7 @@ def chart(budget: Budget, ledger: Ledger) -> None:
         fontsize=9,
         ha="center",
     )
-    figure.tight_layout(rect=(0, 0.11, 1, 0.96))
+    figure.tight_layout(rect=(0, 0.05 + 0.03 * math.ceil(len(handles) / LEGEND_COLUMNS), 1, 0.96))
     figure.savefig(CHART, facecolor=SURFACE)
 
 

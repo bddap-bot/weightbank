@@ -23,7 +23,13 @@ below it. Two other routers for the model with both banks routed, one trained wi
 sampling noise and one that scores chunks by learned keys, do not close the distance to the
 fixed map.
 
-The full write-up, with every run of both experiments, is in [report.md](report.md).
+The first round of the loop described below asked whether one chunk per bank plus a
+rank-24 correction in each module beats two chunks per bank, which store 0.13% more
+weights. It does not: 1.065 nats per byte against 1.058 at 32,000 steps, above at all
+three seeds. The correction does recover nine tenths of what the second chunk buys over one
+chunk alone (1.118).
+
+The full write-up, with every run, is in [report.md](report.md).
 
 ## A second track: fitting a bank to a trained model
 
@@ -135,7 +141,8 @@ tables follow, and cells already tried sit at a new axis's default. The model ha
 the value: an axis is a field of `ModelConfig` in `weightbank/model.py` of the same name,
 or one of the three sharing axes that `weightbank/configs.py` turns into banks, and a cell
 naming a value the model cannot build is refused. Defaults and tags are what run names are
-spelled from, so changing one renames the cells already run.
+spelled from: after changing one, the run files under the old spelling no longer match and
+the ledger refuses them until they are renamed.
 
 ## License
 

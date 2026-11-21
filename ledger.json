@@ -68,12 +68,13 @@
   {
    "id": "low-rank-correction",
    "priority": 1,
-   "status": "open",
+   "status": "refuted",
    "statement": "A shared bank plus a low-rank correction per module beats plain sharing at equal stored weights: one chunk per bank with a rank-24 correction in each of the 8 modules reaches a lower loss than the fixed map with two chunks, which stores 2,304 more weights (0.1%).",
    "settle": [
     {
      "lower": {"shared": "both", "chunks": 1, "rank": 24, "steps": 32000},
-     "higher": {"shared": "both", "chunks": 2, "steps": 32000}
+     "higher": {"shared": "both", "chunks": 2, "steps": 32000},
+     "differences": [0.0094, 0.0081, 0.0023]
     }
    ]
   },
@@ -191,7 +192,32 @@
    ]
   }
  ],
- "rounds": [],
+ "rounds": [
+  {
+   "hypothesis": "low-rank-correction",
+   "lower": {"shared": "both", "chunks": 1, "rank": 24, "steps": 32000},
+   "higher": {"shared": "both", "chunks": 2, "steps": 32000},
+   "budget_gpu_hours": 12.0,
+   "estimated_gpu_hours": 2.5,
+   "why": "low-rank-correction (priority 1) is the highest-priority open hypothesis with an unfinished comparison that fits 12 GPU-hours; the cheapest is 32000/both-c1-r24 against 32000/both-c2, estimated at 2.5 GPU-hours.",
+   "runs": [
+    "runs/32000/both-c1-r24-lr0.001-s0.json",
+    "runs/32000/both-c1-r24-lr0.002-s0.json",
+    "runs/32000/both-c1-r24-lr0.002-s1.json",
+    "runs/32000/both-c1-r24-lr0.002-s2.json",
+    "runs/32000/both-c1-r24-lr0.004-s0.json",
+    "runs/8000/both-c1-r24-lr0.0005-s0.json",
+    "runs/8000/both-c1-r24-lr0.001-s0.json",
+    "runs/8000/both-c1-r24-lr0.002-s0.json"
+   ],
+   "rows": ["32000/both-c1-r24", "8000/both-c1-r24"],
+   "gpu_hours": 4.8,
+   "statuses": {"low-rank-correction": ["open", "refuted"]},
+   "differences": [0.0094, 0.0081, 0.0023],
+   "reading": "32000/both-c1-r24 reached 1.0649 nats per byte with 1,780,736 stored weights at rate 0.002; 32000/both-c2 reached 1.0583 with 1,783,040 at rate 0.001. Lower minus higher by seed: +0.0094, +0.0081, +0.0023. low-rank-correction went from open to refuted.",
+   "note": "Read against one chunk without the correction, which reaches 1.1177 with 994,304 stored weights: the rank-24 correction recovers 0.0527 of the 0.0593 that a second chunk buys, for 2,304 fewer stored weights than the second chunk, and stops 0.0066 short of it. The GPU-hours are wall time inside the training loop, including stretches a run sat paused while other work used the card."
+  }
+ ],
  "cells": [
   {
    "cell": {"shared": "attn", "pick": "routed", "steps": 32000},
@@ -242,6 +268,50 @@
     {"file": "runs/32000/both-c1-lr0.002-s1.json", "rate": 0.002, "seed": 1, "loss": 1.1178, "seconds": 1622},
     {"file": "runs/32000/both-c1-lr0.002-s2.json", "rate": 0.002, "seed": 2, "loss": 1.1168, "seconds": 1693},
     {"file": "runs/32000/both-c1-lr0.004-s0.json", "rate": 0.004, "seed": 0, "loss": 1.1207, "seconds": 1754}
+   ]
+  },
+  {
+   "cell": {"shared": "both", "chunks": 1, "rank": 24, "steps": 32000},
+   "stored_weights": 1780736,
+   "rate": 0.002,
+   "loss": 1.0649,
+   "seed_sd": 0.0008,
+   "runs": [
+    {
+     "file": "runs/32000/both-c1-r24-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.079,
+     "seconds": 2827
+    },
+    {
+     "file": "runs/32000/both-c1-r24-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.0642,
+     "seconds": 2520
+    },
+    {
+     "file": "runs/32000/both-c1-r24-lr0.002-s1.json",
+     "rate": 0.002,
+     "seed": 1,
+     "loss": 1.0658,
+     "seconds": 2721
+    },
+    {
+     "file": "runs/32000/both-c1-r24-lr0.002-s2.json",
+     "rate": 0.002,
+     "seed": 2,
+     "loss": 1.0648,
+     "seconds": 2748
+    },
+    {
+     "file": "runs/32000/both-c1-r24-lr0.004-s0.json",
+     "rate": 0.004,
+     "seed": 0,
+     "loss": 1.0694,
+     "seconds": 2870
+    }
    ]
   },
   {
@@ -839,6 +909,33 @@
     {"file": "runs/8000/both-c1-lr0.001-s1.json", "rate": 0.001, "seed": 1, "loss": 1.1996, "seconds": 407},
     {"file": "runs/8000/both-c1-lr0.001-s2.json", "rate": 0.001, "seed": 2, "loss": 1.2059, "seconds": 410},
     {"file": "runs/8000/both-c1-lr0.002-s0.json", "rate": 0.002, "seed": 0, "loss": 1.1797, "seconds": 457}
+   ]
+  },
+  {
+   "cell": {"shared": "both", "chunks": 1, "rank": 24, "steps": 8000},
+   "stored_weights": 1780736,
+   "runs": [
+    {
+     "file": "runs/8000/both-c1-r24-lr0.0005-s0.json",
+     "rate": 0.0005,
+     "seed": 0,
+     "loss": 1.1961,
+     "seconds": 1342
+    },
+    {
+     "file": "runs/8000/both-c1-r24-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.1654,
+     "seconds": 818
+    },
+    {
+     "file": "runs/8000/both-c1-r24-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.1324,
+     "seconds": 1269
+    }
    ]
   },
   {

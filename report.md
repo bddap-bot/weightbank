@@ -39,19 +39,21 @@ bars run from the lowest to the highest of three seeds. The dashed line joins th
 module-to-chunk map with no router at 1, 2, 4 and 8 chunks. The fixed map at 4 chunks and the
 three models with both banks routed store the same weights to within 1.2%; their four points
 are drawn side by side so that none hides another, which the chart notes under its panels.
-Points are means of three seeds. A star is a cell tried by a round of the loop described next,
-after the first two experiments; it is drawn beside the fixed-map square that stores the same
-weights.
+Points are means of three seeds. A star is a cell with three seeds at this budget beyond
+those of the first two experiments, so far the one the loop described next has tried; it is
+drawn just right of its stored weights so that it hides no point of equal size.
 
 ## The design space and the loop
 
-The rest of this report writes up the first two experiments. This section is generated from
-[ledger.json](ledger.json), the record of the design space: its axes, every cell tried with
-the run files behind it, the hypotheses, and each round the loop has run. A cell is one value
+This section is generated from [ledger.json](ledger.json), the record of the design space:
+its axes, every cell tried with the run files behind it, the hypotheses, and each round the
+loop has run. The sections after it write up the two experiments that came before the loop. A cell is one value
 on every axis. A cell's name is the tags of its values that differ from the default, in the
 order of the axes, and `full` when none does; the training budget is the directory the run
-file sits in. Learning rate and seed are not axes: every cell gets its rate from the sweep
-described under "Choosing the learning rate" and is run at three seeds.
+file sits in. Learning rate and seed are not axes. A cell at the first budget is run at
+three seeds at one rate and swept over three rates at seed 0; a cell at a longer budget gets
+its rate from the sweep described under "Choosing the learning rate" and is then run at
+three seeds at that rate.
 
 ### Axes
 
@@ -60,33 +62,38 @@ described under "Choosing the learning rate" and is run at three seeds.
 | shared | which weights the modules draw from a bank instead of owning: none, feed-forward, attention or both | **none**, ff, attn, both | `ff`, `attn`, `both` |
 | pick | how a module gets its chunk: fixed is module i to chunk i mod N; routed is a per-token learned pick sampled with noise; argmax the same without noise; keys scores a learned key per chunk; frozen is routed until a quarter of training, then each module keeps its most common pick; stopped is routed with the router's weights held still after that quarter | **fixed**, routed, argmax, keys, frozen, stopped | `routed`, `routed-argmax`, `routed-keys`, `frozen-picks`, `stopped-router` |
 | chunks | bank size: chunks stored per shared kind | 1, 2, **4**, 8 | `c1`, `c2`, `c8` |
-| rank | rank of a low-rank correction each module adds to the shared chunk it uses; 0 is none | **0**, 24, 48 | `r24`, `r48` |
+| rank | rank of a low-rank correction each module adds to the shared chunk it uses; 0 is none | **0**, 24 | `r24` |
 | modules | compute modules (layers) | 1, 2, 4, 6, **8** | `plain-l1`, `plain-l2`, `plain-l4`, `plain-l6` |
 | width | hidden width | 96, 128, 160, 192, 224, **256** | `plain-w96`, `plain-w128`, `plain-w160`, `plain-w192`, `plain-w224` |
 | steps | training budget in optimizer steps; the tag is the directory under runs/ | **8000**, 32000, 128000 | `8000`, `32000`, `128000` |
+| architecture | the transformer around the banks: classic is learned positions, layer norms and a GELU feed-forward; modern is rotary positions, root-mean-square norms and a gated feed-forward | **classic**, modern | `modern` |
 
 Adding an axis or a value is one edit to the ledger's `axes`. Names, the cells a hypothesis
 may name, the loop and the tables here follow from it; cells already tried sit at the new
-axis's default. A value the model cannot build is refused when a cell names it.
+axis's default. The model has to know the value: a cell naming one it cannot build is
+refused. With nothing shared, `pick`, `chunks` and `rank` stay at their defaults.
 
 ### Hypotheses
 
 A hypothesis claims that one cell reaches a lower validation loss than another, and lists
-the comparisons that would settle it. A comparison is finished when both of its cells have
-three seeds at one learning rate. Statuses come from finished comparisons alone: `supported`
-when the lower cell is below the higher one at every seed, `refuted` when it is above at
-every seed, `open` otherwise, and `open` while finished comparisons of one hypothesis
-disagree. A lower priority number is run first; priorities and hypotheses are edited by
-hand in the ledger, statuses never.
+the comparisons that would settle it. A comparison is finished when each of its cells has
+three seeds at one learning rate, its own. It favours the hypothesis when the lower cell is
+below the higher one at every seed and the mean difference exceeds both cells' seed spread
+(standard deviation), and goes against it when the lower cell is above by the same test. A
+hypothesis is `supported` when all its comparisons are finished and favour it, `refuted`
+when all go against it, and `open` otherwise; one with no comparison stays open and is
+never picked. A lower priority number is run first. Priorities and hypotheses are edited by
+hand in the ledger; statuses are computed.
 
 | priority | hypothesis | statement | settling comparisons (lower minus higher, by seed) | status |
 |---|---|---|---|---|
-| 1 | low-rank-correction | A shared bank plus a low-rank correction per module beats plain sharing at equal stored weights: the fixed map with N chunks and the correction reaches a lower loss than the fixed map with 2N chunks, which stores the same number of weights to within 0.2%. | `32000/both-c1-r24` below `32000/both-c2`: not run<br>`32000/both-c2-r48` below `32000/both`: not run | **open** |
+| 1 | low-rank-correction | A shared bank plus a low-rank correction per module beats plain sharing at equal stored weights: one chunk per bank with a rank-24 correction in each of the 8 modules reaches a lower loss than the fixed map with two chunks, which stores 2,304 more weights (0.1%). | `32000/both-c1-r24` below `32000/both-c2`: +0.0094, +0.0081, +0.0023 | **refuted** |
+| 2 | reuse-survives-the-modern-architecture | The gain from reuse survives the modern architecture: with rotary positions, root-mean-square norms and a gated feed-forward, eight modules reusing four chunks still beat the plain model of four modules. | `32000/both-modern` below `32000/plain-l4-modern`: not run | **open** |
 | 3 | picking-lock-in | A per-input pick loses to the fixed map because routers lock in early, near-random picks: with each module frozen to its router's most common pick after a quarter of training, the model still loses to the fixed map of module i to chunk i mod N. | `32000/both` below `32000/both-frozen-picks`: not run | **open** |
 | 3 | picking-chase | A per-input pick loses because chunks and router chase each other: holding the router's weights still after a quarter of training beats letting it learn throughout. | `32000/both-stopped-router` below `32000/both-routed`: not run | **open** |
 | 3 | picking-worse-function | A per-input pick loses because mixing chunks token by token is a worse function than one chunk per module, even under a router that no longer moves: frozen picks beat a stopped router. | `32000/both-frozen-picks` below `32000/both-stopped-router`: not run | **open** |
-| 4 | picking-too-few-steps | A per-input pick loses only because the budget is short: at four times the long budget the routed model reaches a lower loss than the fixed map. | `128000/both-routed` below `128000/both`: not run | **open** |
-| 5 | compress-a-trained-model | A trained unshared model can be compressed into a shared bank and keep a lower loss than the same shared model trained from scratch. Explored outside this loop, so it names no cell here; it needs an axis for how training starts before it can. | no cell | **open** |
+| 4 | picking-too-few-steps | A per-input pick loses only because training is short: at 128,000 steps the routed model reaches a lower loss than the fixed map. | `128000/both-routed` below `128000/both`: not run | **open** |
+| 5 | compress-a-trained-model | A trained unshared model can be compressed into a shared bank and keep a lower loss than the same shared model trained from scratch. No cell expresses this yet: it needs an axis for how training starts. | no cell | **open** |
 | 9 | reuse-beats-fewer-modules | Eight modules reusing N chunks beat the plain model of N modules, which stores the same chunks and applies each once. | `32000/both-c1` below `32000/plain-l1`: -0.2580, -0.2593, -0.2622<br>`32000/both-c2` below `32000/plain-l2`: -0.0634, -0.0611, -0.0555<br>`32000/both` below `32000/plain-l4`: -0.0195, -0.0198, -0.0164 | **supported** |
 | 9 | routing-beats-the-fixed-map | A per-input pick over the two banks beats the fixed map over the same banks. | `32000/both-routed` below `32000/both`: +0.0194, +0.0200, +0.0167<br>`32000/both-routed-argmax` below `32000/both`: +0.0361, +0.0310, +0.0304<br>`32000/both-routed-keys` below `32000/both`: +0.0224, +0.0168, +0.0167 | **refuted** |
 
@@ -97,66 +104,79 @@ hand in the ledger, statuses never.
 1. Take the open hypotheses that have an unfinished comparison, lowest priority number
    first, ledger order among equals.
 2. Cost each unfinished comparison: the steps its two cells still lack under the run
-   protocol (three short runs for the rate, at least two long runs to choose it, the other
-   two seeds), at the seconds per step of the tried cell that differs on the fewest axes,
-   the slowest among ties.
+   protocol of "Choosing the learning rate" (three runs at the first budget, at least two
+   at the cell's own budget to choose the rate, then the other two seeds), at the seconds
+   per step of the tried cell that differs on the fewest axes, the slowest among ties.
 3. Pick the first hypothesis with a comparison costing at most H GPU-hours, and its
-   cheapest such comparison. Hypotheses passed over as too costly are named in the round.
-4. Train what the two cells lack, one run at a time, the higher cell first: a control that
-   already has its runs costs nothing. Then rewrite the ledger's cells and statuses from the
-   run files, and this report and chart from the ledger.
+   cheapest such comparison. Hypotheses passed over, as too costly or for a rate sweep that
+   cannot go on, are named in the round.
+4. Train what the two cells lack, one run at a time; a cell that already has its three
+   seeds costs nothing. Then rewrite the ledger's cells and statuses from the run files, and
+   this report and chart from the ledger.
 
 The estimate is a floor, since a rate sweep that lands on the edge of its grid adds runs.
+With no hypothesis to pick the loop trains nothing. A comparison whose runs end without
+three finite seeds is marked abandoned in the ledger and not picked again.
 
 ### Rounds
 
-No round has run.
+### Round 1: low-rank-correction
+
+low-rank-correction (priority 1) is the highest-priority open hypothesis with an unfinished comparison that fits 12 GPU-hours; the cheapest is 32000/both-c1-r24 against 32000/both-c2, estimated at 2.5 GPU-hours.
+
+32000/both-c1-r24 reached 1.0649 nats per byte with 1,780,736 stored weights at rate 0.002; 32000/both-c2 reached 1.0583 with 1,783,040 at rate 0.001. Lower minus higher by seed: +0.0094, +0.0081, +0.0023. low-rank-correction went from open to refuted.
+
+8 runs, 4.8 GPU-hours of training against an estimate of 2.5; ledger rows written: `32000/both-c1-r24`, `8000/both-c1-r24`.
+
+Read against one chunk without the correction, which reaches 1.1177 with 994,304 stored weights: the rank-24 correction recovers 0.0527 of the 0.0593 that a second chunk buys, for 2,304 fewer stored weights than the second chunk, and stops 0.0066 short of it. The GPU-hours are wall time inside the training loop, including stretches a run sat paused while other work used the card.
 
 ### Every cell
 
 One row per cell and budget, from the run files; the rate, mean and seed spread are filled
 where three seeds share a rate.
 
-| cell | shared | pick | chunks | rank | modules | width | steps | stored weights | learning rate | mean loss | seed sd | runs |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `32000/attn-routed` | attn | routed | 4 | 0 | 8 | 256 | 32000 | 5,480,004 | 0.002 | 1.0137 | 0.0032 | 4 |
-| `32000/both-c1` | both | fixed | 1 | 0 | 8 | 256 | 32000 | 994,304 | 0.002 | 1.1177 | 0.0008 | 5 |
-| `32000/both-c2` | both | fixed | 2 | 0 | 8 | 256 | 32000 | 1,783,040 | 0.001 | 1.0583 | 0.0039 | 5 |
-| `32000/both-c8` | both | fixed | 8 | 0 | 8 | 256 | 32000 | 6,515,456 | 0.002 | 0.9841 | 0.0008 | 3 |
-| `32000/both` | both | fixed | 4 | 0 | 8 | 256 | 32000 | 3,360,512 | 0.002 | 1.0134 | 0.0012 | 4 |
-| `32000/both-routed-argmax` | both | argmax | 4 | 0 | 8 | 256 | 32000 | 3,394,952 | 0.002 | 1.0459 | 0.0021 | 5 |
-| `32000/both-routed-keys` | both | keys | 4 | 0 | 8 | 256 | 32000 | 3,398,016 | 0.002 | 1.0321 | 0.0022 | 5 |
-| `32000/both-routed` | both | routed | 4 | 0 | 8 | 256 | 32000 | 3,394,952 | 0.002 | 1.0321 | 0.0013 | 5 |
-| `32000/ff-routed` | ff | routed | 4 | 0 | 8 | 256 | 32000 | 4,430,404 | 0.002 | 1.0090 | 0.0014 | 4 |
-| `32000/full` | none | fixed | 4 | 0 | 8 | 256 | 32000 | 6,515,456 | 0.002 | 0.9833 | 0.0012 | 5 |
-| `32000/plain-l1` | none | fixed | 4 | 0 | 1 | 256 | 32000 | 987,136 | 0.002 | 1.3775 | 0.0013 | 4 |
-| `32000/plain-l2` | none | fixed | 4 | 0 | 2 | 256 | 32000 | 1,776,896 | 0.002 | 1.1183 | 0.0004 | 4 |
-| `32000/plain-l4` | none | fixed | 4 | 0 | 4 | 256 | 32000 | 3,356,416 | 0.002 | 1.0320 | 0.0013 | 5 |
-| `32000/plain-l6` | none | fixed | 4 | 0 | 6 | 256 | 32000 | 4,935,936 | 0.002 | 1.0019 | 0.0022 | 5 |
-| `32000/plain-w128` | none | fixed | 4 | 0 | 8 | 128 | 32000 | 1,684,992 | 0.004 | 1.0779 | 0.0060 | 6 |
-| `32000/plain-w160` | none | fixed | 4 | 0 | 8 | 160 | 32000 | 2,597,696 | 0.004 | 1.0413 | 0.0017 | 6 |
-| `32000/plain-w192` | none | fixed | 4 | 0 | 8 | 192 | 32000 | 3,707,008 | 0.002 | 1.0138 | 0.0014 | 5 |
-| `32000/plain-w224` | none | fixed | 4 | 0 | 8 | 224 | 32000 | 5,012,928 | 0.002 | 0.9980 | 0.0038 | 5 |
-| `32000/plain-w96` | none | fixed | 4 | 0 | 8 | 96 | 32000 | 968,896 | 0.002 | 1.1598 | 0.0010 | 4 |
-| `8000/attn-routed` | attn | routed | 4 | 0 | 8 | 256 | 8000 | 5,480,004 | 0.001 | 1.1146 | 0.0024 | 5 |
-| `8000/both-c1` | both | fixed | 1 | 0 | 8 | 256 | 8000 | 994,304 | 0.001 | 1.2054 | 0.0056 | 5 |
-| `8000/both-c2` | both | fixed | 2 | 0 | 8 | 256 | 8000 | 1,783,040 | 0.001 | 1.1384 | 0.0073 | 5 |
-| `8000/both-c8` | both | fixed | 8 | 0 | 8 | 256 | 8000 | 6,515,456 | 0.001 | 1.0768 | 0.0023 | 3 |
-| `8000/both` | both | fixed | 4 | 0 | 8 | 256 | 8000 | 3,360,512 | 0.001 | 1.1004 | 0.0049 | 5 |
-| `8000/both-routed-argmax` | both | argmax | 4 | 0 | 8 | 256 | 8000 | 3,394,952 | 0.001 | 1.1581 | 0.0024 | 5 |
-| `8000/both-routed-keys` | both | keys | 4 | 0 | 8 | 256 | 8000 | 3,398,016 | 0.001 | 1.1506 | 0.0088 | 5 |
-| `8000/both-routed` | both | routed | 4 | 0 | 8 | 256 | 8000 | 3,394,952 | 0.001 | 1.1452 | 0.0042 | 5 |
-| `8000/ff-routed` | ff | routed | 4 | 0 | 8 | 256 | 8000 | 4,430,404 | 0.001 | 1.0977 | 0.0048 | 5 |
-| `8000/full` | none | fixed | 4 | 0 | 8 | 256 | 8000 | 6,515,456 | 0.001 | 1.0767 | 0.0021 | 5 |
-| `8000/plain-l1` | none | fixed | 4 | 0 | 1 | 256 | 8000 | 987,136 | 0.001 | 1.4265 | 0.0017 | 5 |
-| `8000/plain-l2` | none | fixed | 4 | 0 | 2 | 256 | 8000 | 1,776,896 | 0.001 | 1.1775 | 0.0025 | 5 |
-| `8000/plain-l4` | none | fixed | 4 | 0 | 4 | 256 | 8000 | 3,356,416 | 0.001 | 1.1158 | 0.0052 | 5 |
-| `8000/plain-l6` | none | fixed | 4 | 0 | 6 | 256 | 8000 | 4,935,936 | 0.001 | 1.0952 | 0.0080 | 5 |
-| `8000/plain-w128` | none | fixed | 4 | 0 | 8 | 128 | 8000 | 1,684,992 | 0.001 | 1.1939 | 0.0067 | 5 |
-| `8000/plain-w160` | none | fixed | 4 | 0 | 8 | 160 | 8000 | 2,597,696 | 0.001 | 1.1544 | 0.0043 | 5 |
-| `8000/plain-w192` | none | fixed | 4 | 0 | 8 | 192 | 8000 | 3,707,008 | 0.001 | 1.1177 | 0.0027 | 5 |
-| `8000/plain-w224` | none | fixed | 4 | 0 | 8 | 224 | 8000 | 5,012,928 | 0.001 | 1.0974 | 0.0056 | 5 |
-| `8000/plain-w96` | none | fixed | 4 | 0 | 8 | 96 | 8000 | 968,896 | 0.001 | 1.2616 | 0.0040 | 5 |
+| cell | shared | pick | chunks | rank | modules | width | steps | architecture | stored weights | learning rate | mean loss | seed sd | runs |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `32000/attn-routed` | attn | routed | 4 | 0 | 8 | 256 | 32000 | classic | 5,480,004 | 0.002 | 1.0137 | 0.0032 | 4 |
+| `32000/both-c1` | both | fixed | 1 | 0 | 8 | 256 | 32000 | classic | 994,304 | 0.002 | 1.1177 | 0.0008 | 5 |
+| `32000/both-c1-r24` | both | fixed | 1 | 24 | 8 | 256 | 32000 | classic | 1,780,736 | 0.002 | 1.0649 | 0.0008 | 5 |
+| `32000/both-c2` | both | fixed | 2 | 0 | 8 | 256 | 32000 | classic | 1,783,040 | 0.001 | 1.0583 | 0.0039 | 5 |
+| `32000/both-c8` | both | fixed | 8 | 0 | 8 | 256 | 32000 | classic | 6,515,456 | 0.002 | 0.9841 | 0.0008 | 3 |
+| `32000/both` | both | fixed | 4 | 0 | 8 | 256 | 32000 | classic | 3,360,512 | 0.002 | 1.0134 | 0.0012 | 4 |
+| `32000/both-routed-argmax` | both | argmax | 4 | 0 | 8 | 256 | 32000 | classic | 3,394,952 | 0.002 | 1.0459 | 0.0021 | 5 |
+| `32000/both-routed-keys` | both | keys | 4 | 0 | 8 | 256 | 32000 | classic | 3,398,016 | 0.002 | 1.0321 | 0.0022 | 5 |
+| `32000/both-routed` | both | routed | 4 | 0 | 8 | 256 | 32000 | classic | 3,394,952 | 0.002 | 1.0321 | 0.0013 | 5 |
+| `32000/ff-routed` | ff | routed | 4 | 0 | 8 | 256 | 32000 | classic | 4,430,404 | 0.002 | 1.0090 | 0.0014 | 4 |
+| `32000/full` | none | fixed | 4 | 0 | 8 | 256 | 32000 | classic | 6,515,456 | 0.002 | 0.9833 | 0.0012 | 5 |
+| `32000/plain-l1` | none | fixed | 4 | 0 | 1 | 256 | 32000 | classic | 987,136 | 0.002 | 1.3775 | 0.0013 | 4 |
+| `32000/plain-l2` | none | fixed | 4 | 0 | 2 | 256 | 32000 | classic | 1,776,896 | 0.002 | 1.1183 | 0.0004 | 4 |
+| `32000/plain-l4` | none | fixed | 4 | 0 | 4 | 256 | 32000 | classic | 3,356,416 | 0.002 | 1.0320 | 0.0013 | 5 |
+| `32000/plain-l6` | none | fixed | 4 | 0 | 6 | 256 | 32000 | classic | 4,935,936 | 0.002 | 1.0019 | 0.0022 | 5 |
+| `32000/plain-w128` | none | fixed | 4 | 0 | 8 | 128 | 32000 | classic | 1,684,992 | 0.004 | 1.0779 | 0.0060 | 6 |
+| `32000/plain-w160` | none | fixed | 4 | 0 | 8 | 160 | 32000 | classic | 2,597,696 | 0.004 | 1.0413 | 0.0017 | 6 |
+| `32000/plain-w192` | none | fixed | 4 | 0 | 8 | 192 | 32000 | classic | 3,707,008 | 0.002 | 1.0138 | 0.0014 | 5 |
+| `32000/plain-w224` | none | fixed | 4 | 0 | 8 | 224 | 32000 | classic | 5,012,928 | 0.002 | 0.9980 | 0.0038 | 5 |
+| `32000/plain-w96` | none | fixed | 4 | 0 | 8 | 96 | 32000 | classic | 968,896 | 0.002 | 1.1598 | 0.0010 | 4 |
+| `8000/attn-routed` | attn | routed | 4 | 0 | 8 | 256 | 8000 | classic | 5,480,004 | 0.001 | 1.1146 | 0.0024 | 5 |
+| `8000/both-c1` | both | fixed | 1 | 0 | 8 | 256 | 8000 | classic | 994,304 | 0.001 | 1.2054 | 0.0056 | 5 |
+| `8000/both-c1-r24` | both | fixed | 1 | 24 | 8 | 256 | 8000 | classic | 1,780,736 |  |  |  | 3 |
+| `8000/both-c2` | both | fixed | 2 | 0 | 8 | 256 | 8000 | classic | 1,783,040 | 0.001 | 1.1384 | 0.0073 | 5 |
+| `8000/both-c8` | both | fixed | 8 | 0 | 8 | 256 | 8000 | classic | 6,515,456 | 0.001 | 1.0768 | 0.0023 | 3 |
+| `8000/both` | both | fixed | 4 | 0 | 8 | 256 | 8000 | classic | 3,360,512 | 0.001 | 1.1004 | 0.0049 | 5 |
+| `8000/both-routed-argmax` | both | argmax | 4 | 0 | 8 | 256 | 8000 | classic | 3,394,952 | 0.001 | 1.1581 | 0.0024 | 5 |
+| `8000/both-routed-keys` | both | keys | 4 | 0 | 8 | 256 | 8000 | classic | 3,398,016 | 0.001 | 1.1506 | 0.0088 | 5 |
+| `8000/both-routed` | both | routed | 4 | 0 | 8 | 256 | 8000 | classic | 3,394,952 | 0.001 | 1.1452 | 0.0042 | 5 |
+| `8000/ff-routed` | ff | routed | 4 | 0 | 8 | 256 | 8000 | classic | 4,430,404 | 0.001 | 1.0977 | 0.0048 | 5 |
+| `8000/full` | none | fixed | 4 | 0 | 8 | 256 | 8000 | classic | 6,515,456 | 0.001 | 1.0767 | 0.0021 | 5 |
+| `8000/plain-l1` | none | fixed | 4 | 0 | 1 | 256 | 8000 | classic | 987,136 | 0.001 | 1.4265 | 0.0017 | 5 |
+| `8000/plain-l2` | none | fixed | 4 | 0 | 2 | 256 | 8000 | classic | 1,776,896 | 0.001 | 1.1775 | 0.0025 | 5 |
+| `8000/plain-l4` | none | fixed | 4 | 0 | 4 | 256 | 8000 | classic | 3,356,416 | 0.001 | 1.1158 | 0.0052 | 5 |
+| `8000/plain-l6` | none | fixed | 4 | 0 | 6 | 256 | 8000 | classic | 4,935,936 | 0.001 | 1.0952 | 0.0080 | 5 |
+| `8000/plain-w128` | none | fixed | 4 | 0 | 8 | 128 | 8000 | classic | 1,684,992 | 0.001 | 1.1939 | 0.0067 | 5 |
+| `8000/plain-w160` | none | fixed | 4 | 0 | 8 | 160 | 8000 | classic | 2,597,696 | 0.001 | 1.1544 | 0.0043 | 5 |
+| `8000/plain-w192` | none | fixed | 4 | 0 | 8 | 192 | 8000 | classic | 3,707,008 | 0.001 | 1.1177 | 0.0027 | 5 |
+| `8000/plain-w224` | none | fixed | 4 | 0 | 8 | 224 | 8000 | classic | 5,012,928 | 0.001 | 1.0974 | 0.0056 | 5 |
+| `8000/plain-w96` | none | fixed | 4 | 0 | 8 | 96 | 8000 | classic | 968,896 | 0.001 | 1.2616 | 0.0040 | 5 |
 
 ## The gaps at both budgets
 
@@ -663,6 +683,11 @@ Both experiments and the learning-rate sweep, from the run files.
 | both-c1 | 1 | 32,000 | 0.002 | 994,304 | 1.1178 | 1622 |
 | both-c1 | 2 | 32,000 | 0.002 | 994,304 | 1.1168 | 1693 |
 | both-c1 | 0 | 32,000 | 0.004 | 994,304 | 1.1207 | 1754 |
+| both-c1-r24 | 0 | 32,000 | 0.001 | 1,780,736 | 1.0790 | 2827 |
+| both-c1-r24 | 0 | 32,000 | 0.002 | 1,780,736 | 1.0642 | 2520 |
+| both-c1-r24 | 1 | 32,000 | 0.002 | 1,780,736 | 1.0658 | 2721 |
+| both-c1-r24 | 2 | 32,000 | 0.002 | 1,780,736 | 1.0648 | 2748 |
+| both-c1-r24 | 0 | 32,000 | 0.004 | 1,780,736 | 1.0694 | 2870 |
 | both-c2 | 0 | 32,000 | 0.0005 | 1,783,040 | 1.0752 | 1765 |
 | both-c2 | 0 | 32,000 | 0.001 | 1,783,040 | 1.0548 | 1792 |
 | both-c2 | 1 | 32,000 | 0.001 | 1,783,040 | 1.0577 | 1731 |
@@ -753,6 +778,9 @@ Both experiments and the learning-rate sweep, from the run files.
 | both-c1 | 1 | 8,000 | 0.001 | 994,304 | 1.1996 | 407 |
 | both-c1 | 2 | 8,000 | 0.001 | 994,304 | 1.2059 | 410 |
 | both-c1 | 0 | 8,000 | 0.002 | 994,304 | 1.1797 | 457 |
+| both-c1-r24 | 0 | 8,000 | 0.0005 | 1,780,736 | 1.1961 | 1342 |
+| both-c1-r24 | 0 | 8,000 | 0.001 | 1,780,736 | 1.1654 | 818 |
+| both-c1-r24 | 0 | 8,000 | 0.002 | 1,780,736 | 1.1324 | 1269 |
 | both-c2 | 0 | 8,000 | 0.0005 | 1,783,040 | 1.1882 | 429 |
 | both-c2 | 0 | 8,000 | 0.001 | 1,783,040 | 1.1313 | 430 |
 | both-c2 | 1 | 8,000 | 0.001 | 1,783,040 | 1.1379 | 418 |
