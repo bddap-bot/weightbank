@@ -21,14 +21,16 @@ SWEEP_STEPS = 500
 LADDER = (1e-5, 3e-5, 1e-4, 3e-4, 1e-3, 3e-3, 1e-2)
 FIRST_RATES = LADDER[1:5]
 BITS = (16, 8, 4)
+ORIGINAL_BITS = (16, 8, 6, 5, 4, 3)
 BANKS = ((8, 16), (8, 64), (15, 16), (15, 64), (23, 16), (23, 64))
 SWEEP_BANK = (15, 64)
 EXTRA_SEEDS = (1, 2)
 ROUTED_BANK = (8, 64)
 ROUTED_MICRO = 1
 
-Kind = Literal["bank", "low-rank", "low-rank-kept", "routed"]
+Kind = Literal["bank", "low-rank", "low-rank-kept", "routed", "routed-soft"]
 FIXED: tuple[Kind, ...] = ("bank", "low-rank", "low-rank-kept")
+PRIOR: dict[Kind, float] = {"routed": 8.0, "routed-soft": 2.0}
 
 
 @dataclass(frozen=True)
@@ -115,7 +117,7 @@ def chosen_rate(kind: Kind) -> float:
     bank's."""
     scores = {
         rate: float(arm.read()["validation_perplexity"])
-        for rate, arm in trials("bank" if kind == "routed" else kind).items()
+        for rate, arm in trials("bank" if kind in PRIOR else kind).items()
     }
     finite = {rate: score for rate, score in scores.items() if math.isfinite(score)}
     return min(finite, key=lambda rate: finite[rate])
@@ -132,8 +134,10 @@ class Bench:
 
     def original(self) -> dict[str, Any]:
         return {
-            "bytes": {str(bits): bank.stored_bytes(self.model, bits) for bits in BITS},
-            "perplexity": {str(bits): lm.perplexity(self.squeezed(self.model, bits), self.test) for bits in BITS},
+            "bytes": {str(bits): bank.stored_bytes(self.model, bits) for bits in ORIGINAL_BITS},
+            "perplexity": {
+                str(bits): lm.perplexity(self.squeezed(self.model, bits), self.test) for bits in ORIGINAL_BITS
+            },
             "validation_perplexity": lm.perplexity(self.model, self.validation),
         }
 
@@ -171,8 +175,8 @@ class Bench:
             facts["weight_error"] = fitted.error()
             facts["unmatched_weight_error"] = self.fitted(arm, matched=False).error()
             return bank.banked(self.model, fitted), facts
-        if arm.kind == "routed":
-            return bank.routed(self.model, fitted), facts
+        if arm.kind in PRIOR:
+            return bank.routed(self.model, fitted, PRIOR[arm.kind]), facts
         if arm.kind == "low-rank-kept":
             student = bank.kept_low_rank(self.model, fitted)
             facts["ranks"] = [bank.kept_rank(fitted, layer) if fitted.shares(layer) else None for layer in range(lm.LAYERS)]
@@ -214,14 +218,14 @@ class Bench:
             "bytes": {str(bits): bank.stored_bytes(student, bits) for bits in BITS},
             "fit_perplexity": lm.perplexity(student, self.test),
         }
-        micro = ROUTED_MICRO if arm.kind == "routed" else 4
+        micro = ROUTED_MICRO if arm.kind in PRIOR else 4
         record["loss"] = heal(student, self.model, self.train, steps, rate, arm.seed, micro)
         record["validation_perplexity"] = lm.perplexity(student, self.validation)
         if isinstance(arm.budget, Full):
             record["healed_perplexity"] = {
                 str(bits): lm.perplexity(self.squeezed(student, bits), self.test) for bits in BITS
             }
-        if arm.kind == "routed":
+        if arm.kind in PRIOR:
             record["off_assignment"] = self.off_assignment(student, facts["assignment"])
         record["seconds"] = time.time() - started
         return record
@@ -232,6 +236,7 @@ def plan() -> list[Arm]:
     arms = [Arm(kind, chunks, rank) for chunks, rank in BANKS for kind in FIXED]
     arms.append(Arm("routed", *ROUTED_BANK))
     arms += [Arm(kind, *SWEEP_BANK, Full(seed)) for seed in EXTRA_SEEDS for kind in FIXED]
+    arms.append(Arm("routed-soft", *ROUTED_BANK))
     return arms
 
 

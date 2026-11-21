@@ -17,7 +17,6 @@ from weightbank.model import ModelConfig, Routed, ScoreRouter
 
 FLOAT_BITS = 16
 GROUP = 64
-PRIOR = 8.0
 FIT_ROUNDS = 4
 
 Module = TypeVar("Module", bound=nn.Module)
@@ -241,9 +240,9 @@ class Router(ScoreRouter):
     """The score router with a per-layer prior that starts every layer on the bank step the fit
     assigned it."""
 
-    def __init__(self, width: int, assignment: list[int], chunks: int) -> None:
+    def __init__(self, width: int, assignment: list[int], chunks: int, prior: float) -> None:
         super().__init__(ModelConfig(len(assignment), width), Routed(chunks))
-        self.prior = nn.Parameter(PRIOR * F.one_hot(torch.tensor(assignment), chunks).float())
+        self.prior = nn.Parameter(prior * F.one_hot(torch.tensor(assignment), chunks).float())
 
     def logits(self, x: Tensor, module: int) -> Tensor:
         return super().logits(x, module) + self.prior[module]
@@ -287,13 +286,13 @@ class RoutedFeedForward(nn.Module):
         return out if down_fix is None else out + down_fix(hidden_mix)
 
 
-def routed(model: Lm, fitted: Fit) -> Lm:
+def routed(model: Lm, fitted: Fit, prior: float) -> Lm:
     student = scaffold(model)
     chunks = [
         (Dense(gate.clone()), Dense(up.clone()), Dense(down.clone()))
         for gate, up, down in (unstack(centre) for centre in fitted.centres)
     ]
-    router = Router(model.embedding.shape[1], fitted.assignment, len(chunks)).to(model.embedding.device)
+    router = Router(model.embedding.shape[1], fitted.assignment, len(chunks), prior).to(model.embedding.device)
     for layer, block in enumerate(student.blocks):
         block.feed_forward = RoutedFeedForward(chunks, fitted.corrections(layer), router, layer)
     return student

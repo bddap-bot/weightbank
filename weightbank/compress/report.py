@@ -21,6 +21,8 @@ from weightbank.compress.run import (
     EXTRA_SEEDS,
     FIXED,
     LADDER,
+    ORIGINAL_BITS,
+    PRIOR,
     ROUTED_BANK,
     RUNS,
     STEPS,
@@ -40,14 +42,29 @@ REPORT = Path("compress.md")
 CHART = Path("compress-chart.png")
 SIMILARITY = Path("compress-similarity.png")
 
-COLOUR: dict[Kind, str] = {"bank": "#2a78d6", "low-rank": "#eb6834", "low-rank-kept": "#1baf7a", "routed": "#eda100"}
+COLOUR: dict[Kind, str] = {
+    "bank": "#2a78d6",
+    "low-rank": "#eb6834",
+    "low-rank-kept": "#1baf7a",
+    "routed": "#eda100",
+    "routed-soft": "#e87ba4",
+}
 LABEL: dict[Kind, str] = {
     "bank": "shared bank",
     "low-rank": "low rank, every layer",
     "low-rank-kept": "low rank, same layers kept whole",
     "routed": "routed bank",
+    "routed-soft": "routed bank, soft start",
 }
-MARKER = {16: "o", 8: "s", 4: "^"}
+MARKER = {16: "o", 8: "s", 6: "D", 5: "p", 4: "^", 3: "v"}
+NOTE = {
+    16: (0, -16, "center"),
+    8: (0, -16, "center"),
+    6: (0, -16, "center"),
+    5: (0, -16, "center"),
+    4: (-9, -12, "right"),
+    3: (10, -4, "left"),
+}
 BLUES = ("#fcfcfb", "#cde2fb", "#86b6ef", "#3987e5", "#1c5cab", "#0d366b")
 
 
@@ -74,7 +91,7 @@ def original_table(original: dict[str, Any]) -> str:
                 megabytes(original["bytes"][str(bits)]),
                 figure(original["perplexity"][str(bits)]),
             ]
-            for bits in BITS
+            for bits in ORIGINAL_BITS
         ],
     )
 
@@ -89,7 +106,7 @@ def shared_layers(record: dict[str, Any]) -> int:
 
 
 def layout(arm: Arm, record: dict[str, Any]) -> str:
-    if arm.kind in ("bank", "routed"):
+    if arm.kind in ("bank", *PRIOR):
         return f"{arm.chunks} matrices, rank {arm.rank}"
     ranks = sorted({rank for rank in record["ranks"] if rank is not None})
     return "rank " + (str(ranks[0]) if len(ranks) == 1 else f"{ranks[0]} to {ranks[-1]}")
@@ -196,7 +213,7 @@ def sweep_table() -> str:
 
 def routed_table() -> str:
     rows = []
-    kinds: tuple[Kind, ...] = ("bank", "routed", "low-rank-kept", "low-rank")
+    kinds: tuple[Kind, ...] = ("bank", *PRIOR, "low-rank-kept", "low-rank")
     for kind in kinds:
         record = Arm(kind, *ROUTED_BANK).read()
         moved = f"{100 * record['off_assignment']:.1f}%" if "off_assignment" in record else ""
@@ -241,7 +258,7 @@ def style(axes: Axes) -> None:
 
 def megabyte_axis(axes: Axes) -> None:
     axes.set_xscale("log")
-    ticks = [40, 60, 80, 120, 160, 200, 270]
+    ticks = [45, 60, 80, 100, 130, 160, 200, 270]
     axes.set_xticks(ticks, [str(tick) for tick in ticks])
     axes.set_xticks([], minor=True)
     axes.set_xlabel("stored megabytes, whole model", color=MUTED, fontsize=10)
@@ -257,12 +274,12 @@ def mark(axes: Axes, x: float, y: float, kind: Kind, bits: int, healed: bool) ->
         markeredgecolor=SURFACE if healed else COLOUR[kind],
         markeredgewidth=1.0 if healed else 1.6,
         linestyle="none",
-        zorder=3,
+        zorder=5 if kind == "bank" else 3,
     )
 
 
 def frontier(axes: Axes, original: dict[str, Any]) -> None:
-    points = [(original["bytes"][str(bits)] / 1e6, original["perplexity"][str(bits)], bits) for bits in BITS]
+    points = [(original["bytes"][str(bits)] / 1e6, original["perplexity"][str(bits)], bits) for bits in ORIGINAL_BITS]
     axes.plot([x for x, _, _ in points], [y for _, y, _ in points], color=INK, linewidth=2, zorder=2)
     for x, y, bits in points:
         axes.plot([x], [y], marker=MARKER[bits], markersize=9, color=INK, markeredgecolor=SURFACE, zorder=4)
@@ -288,27 +305,18 @@ def chart(original: dict[str, Any]) -> None:
     whole.set_title("Before and after healing, 16-bit weights", color=INK, fontsize=11, loc="left")
     whole.set_ylabel("perplexity on WikiText-2 test, lower is better", color=MUTED, fontsize=10)
     detail.set_title("After healing, stored at 16, 8 and 4 bits", color=INK, fontsize=11, loc="left")
-    detail.set_ylim(original["perplexity"]["16"] * 0.9, highest * 1.15)
-    ticks = [tick for tick in (20, 30, 50, 100, 200, 500, 1000, 2000) if tick < highest * 1.15]
+    highest = max(highest, original["perplexity"]["3"])
+    detail.set_ylim(original["perplexity"]["16"] * 0.82, highest * 1.15)
+    ticks = [tick for tick in (20, 25, 30, 40, 50, 70, 100, 150, 200, 300, 500, 1000) if tick < highest * 1.15]
     detail.set_yticks(ticks, [str(tick) for tick in ticks])
     detail.set_yticks([], minor=True)
-    for axes in (whole, detail):
-        axes.annotate(
-            "original model",
-            (original["bytes"]["16"] / 1e6, original["perplexity"]["16"]),
-            textcoords="offset points",
-            xytext=(-8, 9),
-            ha="right",
-            color=INK,
-            fontsize=9,
-        )
-    for bits in (8, 4):
+    for bits in ORIGINAL_BITS:
         detail.annotate(
-            f"original, {bits}-bit",
+            "original, 16-bit" if bits == 16 else f"{bits}-bit",
             (original["bytes"][str(bits)] / 1e6, original["perplexity"][str(bits)]),
             textcoords="offset points",
-            xytext=(0, -15),
-            ha="center",
+            xytext=NOTE[bits][:2],
+            ha=NOTE[bits][2],
             color=INK,
             fontsize=9,
         )
@@ -316,7 +324,7 @@ def chart(original: dict[str, Any]) -> None:
         Line2D([], [], marker="o", linestyle="none", markersize=8, color=COLOUR[kind], label=LABEL[kind])
         for kind in COLOUR
     ]
-    kinds.append(Line2D([], [], marker="o", markersize=8, color=INK, linewidth=2, label="original model, rounded to 8 and 4 bits, not healed"))
+    kinds.append(Line2D([], [], marker="o", markersize=8, color=INK, linewidth=2, label="original model, as published and rounded to 8, 6, 5, 4 and 3 bits, not healed"))
     states = [
         Line2D([], [], marker="o", linestyle="none", markersize=8, markerfacecolor=SURFACE, markeredgecolor=MUTED, markeredgewidth=1.6, label="before healing"),
         Line2D([], [], marker="o", linestyle="none", markersize=8, color=MUTED, label="after healing"),
@@ -341,14 +349,19 @@ def chart(original: dict[str, Any]) -> None:
 
 
 def similarity_chart(similarity: dict[str, Any]) -> None:
-    canvas, panels = plt.subplots(1, 3, figsize=(14, 4.8), dpi=160, facecolor=SURFACE, width_ratios=(1, 1, 1.1))
+    canvas, panels = plt.subplots(
+        1, 4, figsize=(16, 4.9), dpi=160, facecolor=SURFACE, width_ratios=(1, 1, 1, 1.25), layout="constrained"
+    )
     colours = LinearSegmentedColormap.from_list("blues", BLUES)
-    matched = np.asarray(similarity["matched"])
-    top = float(np.max(matched - np.eye(LAYERS)))
-    titles = {"raw": "Hidden units as published", "matched": "Hidden units matched between layers"}
+    top = float(np.max(np.asarray(similarity["matched"]) - np.eye(LAYERS)))
+    titles = {
+        "raw": "Hidden units as published",
+        "matched": "Hidden units matched",
+        "scrambled_matched": "Matched, on scrambled layers",
+    }
     image = None
     for axes, (key, title) in zip(panels, titles.items()):
-        values = np.asarray(similarity[key]) - np.eye(LAYERS)
+        values = np.asarray(similarity[key])
         np.fill_diagonal(values, np.nan)
         image = axes.imshow(values, cmap=colours, vmin=0, vmax=top)
         axes.set_title(title, color=INK, fontsize=11, loc="left")
@@ -358,23 +371,23 @@ def similarity_chart(similarity: dict[str, Any]) -> None:
         for spine in axes.spines.values():
             spine.set_visible(False)
     assert image is not None
-    bar = canvas.colorbar(image, ax=list(panels[:2]), shrink=0.8, pad=0.02)
+    bar = canvas.colorbar(image, ax=list(panels[:3]), location="bottom", shrink=0.5, aspect=40)
     bar.set_label("cosine between two layers' feed-forward weights", color=MUTED, fontsize=9)
     bar.ax.tick_params(colors=MUTED, labelsize=9, length=0)
     bar.outline.set_visible(False)  # type: ignore[operator]
-    energy = panels[2]
+    energy = panels[3]
     style(energy)
     counts = list(range(1, LAYERS + 1))
     energy.plot(counts, [count / LAYERS for count in counts], color=MUTED, linewidth=2, linestyle=(0, (4, 3)))
     energy.plot(counts, similarity["shared_energy"], color=COLOUR["bank"], linewidth=2)
-    energy.annotate("this model", (20, similarity["shared_energy"][19]), textcoords="offset points", xytext=(-10, 12), ha="right", color=INK, fontsize=9)
-    energy.annotate("equal, unrelated layers", (20, 20 / LAYERS), textcoords="offset points", xytext=(10, -16), color=INK, fontsize=9)
-    energy.set_title("Weight energy the best k shared matrices hold", color=INK, fontsize=11, loc="left")
+    energy.annotate("this model", (15, similarity["shared_energy"][14]), textcoords="offset points", xytext=(-12, 14), ha="right", color=INK, fontsize=9)
+    energy.annotate("equal, unrelated layers", (15, 15 / LAYERS), textcoords="offset points", xytext=(12, -18), color=INK, fontsize=9)
+    energy.set_title("Share of weights k shared matrices can hold", color=INK, fontsize=11, loc="left")
     energy.set_xlabel("shared matrices, k", color=MUTED, fontsize=10)
     energy.set_ylabel("share of squared feed-forward weights", color=MUTED, fontsize=10)
     energy.set_xlim(1, LAYERS)
     energy.set_ylim(0, 1)
-    canvas.savefig(SIMILARITY, facecolor=SURFACE, bbox_inches="tight")
+    canvas.savefig(SIMILARITY, facecolor=SURFACE)
     plt.close(canvas)
 
 

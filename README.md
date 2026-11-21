@@ -25,6 +25,21 @@ fixed map.
 
 The full write-up, with every run of both experiments, is in [report.md](report.md).
 
+## A second track: fitting a bank to a trained model
+
+![Stored bytes against perplexity](compress-chart.png)
+
+[compress.md](compress.md) asks the cheaper question: can a shared bank compress a model that
+already exists? The 30 feed-forward steps of SmolLM2-135M are replaced by 8, 15 or 23 shared
+ones plus low-rank corrections per layer, fitted from the weights and healed by brief
+distillation. It did not pay: rounding the original to 5 bits cuts it from 269 to 93 MB at
+perplexity 23.1, the best bank arm reaches 240 MB at 23.8, and every bank arm at 16 or 8 bits
+is beaten by plain rounding at fewer bytes. The bank beats low rank on every layer
+by 15 to 24% of perplexity at equal bytes, but a control that leaves the same layers whole
+and shares nothing comes within 2% of it, and a per-input router added nothing. The layers of
+that model have almost nothing in common to share, so this is a result about retrofitting,
+not about banks a model is trained with.
+
 ## Design
 
 - **Model.** A pre-norm, decoder-only transformer over bytes: 8 modules, width 256, 4 heads,
@@ -61,6 +76,7 @@ The environment is pinned in `shell.nix` (PyTorch with CUDA); enter it with `nix
 python -m weightbank.train both-routed --seed 0 --steps 8000 --rate 1e-3
 python -m weightbank.sweep                         # every planned run that runs/ lacks
 python -m weightbank.report                        # report.md and chart.png from runs/
+python -m weightbank.compress                      # compress.md and its charts from runs/compress/
 python -m pytest && python -m mypy                 # tests and type check
 ```
 

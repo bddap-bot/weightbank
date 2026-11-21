@@ -201,7 +201,7 @@ def test_truncate_is_the_best_low_rank_matrix() -> None:
 def test_routed_model_starts_as_the_fixed_bank() -> None:
     model = tiny()
     fitted = bank.fit(layers_of(model), pairs(5), 4, matched=True)
-    routed = bank.routed(model, fitted).eval()
+    routed = bank.routed(model, fitted, 8.0).eval()
     assert torch.allclose(routed(tokens()), bank.banked(model, fitted)(tokens()), atol=1e-4)
     step = routed.block(7).feed_forward
     assert isinstance(step, bank.RoutedFeedForward) and step.picked is not None
@@ -211,7 +211,7 @@ def test_routed_model_starts_as_the_fixed_bank() -> None:
 def test_routed_pick_changes_the_output() -> None:
     model = tiny()
     fitted = bank.fit(layers_of(model), pairs(5), 4, matched=True)
-    routed = bank.routed(model, fitted).eval()
+    routed = bank.routed(model, fitted, 8.0).eval()
     before = routed(tokens())
     step = routed.block(7).feed_forward
     assert isinstance(step, bank.RoutedFeedForward)
@@ -222,7 +222,7 @@ def test_routed_pick_changes_the_output() -> None:
 
 def test_routed_training_sends_gradient_to_router_and_every_bank_matrix() -> None:
     model = tiny()
-    routed = bank.routed(model, bank.fit(layers_of(model), pairs(5), 4, matched=True)).train()
+    routed = bank.routed(model, bank.fit(layers_of(model), pairs(5), 4, matched=True), 8.0).train()
     routed(tokens()).sum().backward()
     step = routed.block(7).feed_forward
     assert isinstance(step, bank.RoutedFeedForward)
@@ -326,7 +326,7 @@ def test_plan_pairs_every_bank_with_both_controls() -> None:
     assert len({arm.path for arm in arms}) == len(arms)
     for chunks, rank in run.BANKS:
         assert {arm.kind for arm in arms if (arm.chunks, arm.rank, arm.seed) == (chunks, rank, 0)} >= set(run.FIXED)
-    assert sum(arm.kind == "routed" for arm in arms) == 1
+    assert [arm.kind for arm in arms if arm.kind in run.PRIOR] == list(run.PRIOR)
 
 
 def test_a_diverged_rate_is_never_chosen(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -358,7 +358,7 @@ def test_fit_centre_is_the_mean_of_its_members() -> None:
 def test_routed_training_pass_is_the_fixed_bank_when_the_prior_decides() -> None:
     model = tiny()
     fitted = bank.fit(layers_of(model), pairs(5), 4, matched=True)
-    routed = bank.routed(model, fitted).train()
+    routed = bank.routed(model, fitted, 8.0).train()
     step = routed.block(0).feed_forward
     assert isinstance(step, bank.RoutedFeedForward)
     with torch.no_grad():
