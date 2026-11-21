@@ -12,13 +12,17 @@ the resource treated as scarce; compute is not.
 
 ![Validation loss against stored weights](chart.png)
 
-At equal stored weights, routing did not beat a smaller plain model after 8,000 training steps
-on enwik8. Routing only the feed-forward weights matched the plain curve (0.003 nats per byte
-below it, inside seed spread); routing attention, or both, landed 0.026 and 0.030 above it.
-Sharing the same two banks with no router, each module fixed to one chunk, landed 0.015 below
-the plain curve.
+At equal stored weights, routing did not beat a smaller plain model on enwik8, at 8,000
+training steps with one learning rate or at 32,000 steps with a learning rate chosen for
+every configuration. At the long budget, routing only the feed-forward weights lands 0.005
+nats per byte above the plain curve, routing attention 0.021 above it, and routing both 0.012
+above it. Sharing the same two banks with no router, each module fixed to one chunk, lands
+0.008 below the plain curve, and sharing a single chunk across all 8 modules lands 0.038
+below it. Two other routers for the model with both banks routed, one trained without
+sampling noise and one that scores chunks by learned keys, do not close the distance to the
+fixed map.
 
-The full write-up, with every run, is in [report.md](report.md).
+The full write-up, with every run of both experiments, is in [report.md](report.md).
 
 ## Design
 

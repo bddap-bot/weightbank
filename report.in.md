@@ -14,7 +14,20 @@ at its stored weights; negative means the configuration beats a plain model of i
 
 ## Reading
 
-READING
+Three findings of the first experiment held in sign and shrank in size: attention routed
+stays above the plain curve (+0.026 at the first budget, +0.021 at the long one), both routed
+stays above it (+0.030, now +0.012), and the fixed map with no router stays below it (-0.015,
+now -0.008) and still beats both routed on the same banks, by 0.019 where it was 0.045. One
+moved: feed-forward routed went from -0.003, inside the seed spread, to +0.005 with all three
+seeds above the curve (+0.003 to +0.008), so at the long budget it is slightly worse than a
+plain model of its size and no longer level with it; part of that is the plain curve, since
+at tuned rates the narrowed plain model became the better curve, and against the curve of
+fewer modules, the better one at the first budget, feed-forward routed sits at -0.001. The
+signs are therefore properties of the designs, while both routed lost three fifths of its
+gap, the fixed map half and attention routed a fifth to the longer budget and tuned rates:
+choosing a chunk per token costs loss against a plain model and against fixed sharing of the
+same weights, and fixed sharing is the only arrangement here that beats a plain model of
+equal storage.
 
 ![Validation loss against stored weights](chart.png)
 
@@ -76,7 +89,11 @@ is behind it.
 
 {{short-sweep}}
 
-SHORTNOTE
+Every configuration's best short rate is 2e-3, the highest of the three, by 0.005 to 0.036
+over 1e-3: a short budget rewards a high rate. A rate chosen here would therefore say more
+about the budget than about the configuration, which is why the short sweep only names where
+the long sweep starts, and why the first experiment's single rate of 1e-3 was low for every
+configuration at once.
 
 Long sweep: 32,000 steps at the best short rate and the better of its neighbours in the
 short sweep. The rate with the lowest long loss is the configuration's rate, and its run is
@@ -101,7 +118,11 @@ by a similar amount. The two small gaps of the first experiment are of that size
   GPU.
 - `own-chunk` has no sweep of its own: it is the full control computed through the bank code,
   so it trains at the full control's rate, which keeps the two paired.
-CUTS
+- The two other routers were run for the model with both banks routed only. Feed-forward-only
+  and attention-only versions of them would be four more configurations, about 21 hours of
+  the GPU, and the both-routed pair already answers what they were added to ask.
+- No configuration was trained under another optimizer. A check of three configurations under
+  Muon, with its own rate sweeps, would have been about 12 more hours of the GPU.
 
 ## Setup
 
@@ -150,7 +171,8 @@ CUTS
 - Private weights: each module keeps its own two layer norms (1,024 weights per module). No
   other per-module add-on. Stored weights count every parameter: bank chunks, routers and
   their module vectors, layer norms, embeddings and the output head.
-- Hardware: one RTX 2080, 8 GB, shared with other work, so wall times are indicative. Runs
+- Hardware: one RTX 2080, 8 GB, shared with other work, so wall times are indicative: a
+  run slowed or paused by other work on the GPU counts that time. Runs
   were trained one at a time: one run saturates this GPU (three plain runs at once each took
   three times as long). During
   training a routed step computes every chunk for every token (the straight-through gradient
@@ -170,7 +192,12 @@ Long budget, both at the full control's rate:
 
 {{sanity-long}}
 
-SANITYNOTE
+At the first budget the per-seed differences (+0.0004, -0.0001, +0.0000) are a fifth or less
+of the full control's seed sd (0.0021). At the long budget they are +0.0025, +0.0004 and
+-0.0005, mean +0.0008, against a seed sd of 0.0012: the two start from the same weights and
+compute the same function in a different order of operations, and over 32,000 steps of
+half-precision arithmetic their trajectories drift apart by about as much as two seeds do.
+The routed code path with N = M reproduces the full control at both budgets.
 
 ## Why did the fixed map beat the learned router?
 
@@ -187,7 +214,18 @@ First budget, every one at 1e-3:
 
 {{routers-first}}
 
-ROUTERNOTE
+Neither the sampling noise nor the router's form explains it. Removing the noise made the
+model worse at both budgets: `both-routed-argmax` is 0.014 above `both-routed` at the long
+budget (1.0459 against 1.0322, every seed) and 0.013 above it at the first, and its router
+ends far less decided (it gives its pick a probability of 0.51 to 0.56, where the sampled
+routers give 0.85 to 0.96), so the noise was helping the router commit and not costing loss.
+Changing the form changed nothing: `both-routed-keys` ends at 1.0321, within 0.0001 of
+`both-routed`, and at the first budget it is 0.005 above it, inside its own seed sd of 0.009.
+All three routed models stay 0.019 to 0.033 above the fixed map at the long budget (0.045 to
+0.058 at the first). What separates the routed models from the fixed map is therefore
+something these two arms leave in place: every module choosing among all four chunks token by
+token, trained through a hard pick. The longer budget and tuned rates closed three fifths of
+the distance (0.045 to 0.019) without either change to the router.
 
 ## Reuse without a router, by number of chunks
 
@@ -201,7 +239,18 @@ curve at its stored weights.
 
 {{fixed-map}}
 
-FIXEDNOTE
+The gain from reuse grows as the chunks get fewer. Against the plain model that stores the
+same chunks and applies each once, 8 modules reusing them are better by 0.260 at 1 chunk,
+0.060 at 2 and 0.019 at 4 at the long budget (0.221, 0.039 and 0.015 at the first), and
+level at 8, where nothing is reused; that comparison mostly measures depth, 8 applications
+against N. Against the better plain model of equal storage, which may be wide and deep, the
+fixed map still wins at every size below the full model, by 0.038 at 1 chunk, 0.015 at 2 and
+0.008 at 4 at the long budget (0.053, 0.039 and 0.015 at the first): ALBERT-style sharing
+gives the largest gain per stored weight and cycle sharing at 4 chunks the smallest, and the
+longer budget widened the gain over the partner while narrowing the gain over the plain
+curve, because tuned narrow plain models improved the most. The 2-chunk figure is the least
+certain: its seeds range from -0.023 to -0.005 against the curve, and its rate was chosen by
+a margin of 0.0004.
 
 ## Picks at validation against picks in training
 
