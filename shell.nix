@@ -6,6 +6,10 @@ let
     ps.matplotlib
     ps.mypy
     ps.pytest
+    ps.safetensors
+    ps.tokenizers
+    ps.pyarrow
+    ps.scipy
   ]);
 in
 pkgs.mkShell { packages = [ python ]; }
