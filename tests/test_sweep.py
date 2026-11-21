@@ -1,32 +1,28 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from dataclasses import asdict
 from pathlib import Path
 
 import pytest
 
-from weightbank import sweep, train
-from weightbank.configs import CONFIGS, SEEDS
+from weightbank import train
+from weightbank.ledger import SEEDS
 from weightbank.sweep import (
     LONG_STEPS,
     RATE_GRID,
     chosen,
-    first_runs,
+    least_steps,
     long_plan,
-    long_runs,
     long_sweep,
-    long_sweep_runs,
-    planned,
+    protocol,
     short_plan,
-    short_runs,
     short_sweep,
 )
 from weightbank.train import Plan, Run
 
 ARM = "ff-routed"
-SWEPT = tuple(name for name in CONFIGS if name != "own-chunk")
+SHORT = [Plan(ARM, 0, 8000, rate) for rate in (5e-4, 1e-3, 2e-3)]
 
 
 @pytest.fixture(autouse=True)
@@ -79,27 +75,37 @@ def test_a_run_file_of_another_plan_is_refused(other: Plan) -> None:
         other.read()
 
 
+
+
+def test_a_run_of_a_name_the_axes_do_not_spell_is_refused() -> None:
+    with pytest.raises(ValueError):
+        Plan("ff-routed-twice", 0, 8000, 1e-3).path
+    with pytest.raises(ValueError):
+        Plan(ARM, 0, 9000, 1e-3).path
+
+
 def test_the_short_sweep_is_the_first_budget_at_seed_zero() -> None:
     assert short_plan(ARM, 1e-3) == Plan(ARM, 0, 8000, 1e-3)
-    assert short_plan(ARM, 1e-3) in first_runs()
+    assert long_plan(ARM, 1e-3, 128000) == Plan(ARM, 0, 128000, 1e-3)
     assert long_plan(ARM, 1e-3) == Plan(ARM, 0, 32000, 1e-3)
     assert LONG_STEPS == 32000
 
 
-def test_the_first_experiment_is_every_configuration_at_one_rate() -> None:
-    assert first_runs() == [Plan(config, seed, 8000, 1e-3) for seed in SEEDS for config in CONFIGS]
+def test_the_first_budget_is_swept_at_seed_zero_and_run_at_one_rate_for_every_seed() -> None:
+    assert protocol(ARM, 8000) == [*SHORT, Plan(ARM, 1, 8000, 1e-3), Plan(ARM, 2, 8000, 1e-3)]
+    assert least_steps(8000) == 5 * 8000
 
 
-def test_every_configuration_but_the_code_check_is_swept() -> None:
-    assert short_runs() == [short_plan(config, rate) for config in SWEPT for rate in (5e-4, 1e-3, 2e-3)]
-    assert set(short_runs()) <= set(planned())
+def test_a_longer_budget_starts_from_the_short_sweep() -> None:
+    assert protocol(ARM, 32000) == SHORT == protocol(ARM, 128000)
+    assert least_steps(32000) == 3 * 8000 + 4 * 32000
 
 
 def test_no_long_run_is_planned_before_the_short_sweep_has_run() -> None:
     short(ARM, {5e-4: 1.2, 1e-3: 1.1})
     assert short_sweep(ARM) == {5e-4: 1.2, 1e-3: 1.1, 2e-3: None}
     assert long_sweep(ARM) is None
-    assert long_sweep_runs() == [] and long_runs() == []
+    assert protocol(ARM, 32000) == SHORT
 
 
 @pytest.mark.parametrize(
@@ -116,20 +122,21 @@ def test_the_long_sweep_starts_at_the_best_short_rate_and_its_better_neighbour(
 ) -> None:
     short(ARM, losses)
     assert long_sweep(ARM) == dict.fromkeys(candidates)
-    assert long_sweep_runs() == [long_plan(ARM, rate) for rate in candidates]
-    assert set(long_sweep_runs()) <= set(planned())
+    assert protocol(ARM, 32000) == [*SHORT, *(long_plan(ARM, rate) for rate in candidates)]
     assert chosen(ARM) is None
 
 
 def test_the_lower_long_loss_is_chosen_and_the_other_seeds_follow_it() -> None:
     short(ARM, {5e-4: 1.3, 1e-3: 1.2, 2e-3: 1.1})
     long(ARM, {1e-3: 1.004})
-    assert chosen(ARM) is None and long_runs() == []
+    assert chosen(ARM) is None and len(protocol(ARM, 32000)) == 5
     long(ARM, {2e-3: 1.0})
     assert chosen(ARM) == 2e-3
-    assert long_runs() == [Plan(ARM, seed, 32000, 2e-3) for seed in SEEDS]
-    assert set(long_runs()) <= set(planned())
-    assert len(planned()) == len(set(planned()))
+    assert protocol(ARM, 32000) == [
+        *SHORT,
+        long_plan(ARM, 1e-3),
+        *(Plan(ARM, seed, 32000, 2e-3) for seed in SEEDS),
+    ]
 
 
 def test_a_lead_of_the_steep_margin_or_less_on_the_short_best_ends_the_sweep() -> None:
@@ -142,8 +149,8 @@ def test_a_steep_lead_on_the_short_best_adds_the_rate_beyond_it() -> None:
     short(ARM, {5e-4: 1.3, 1e-3: 1.2, 2e-3: 1.1})
     long(ARM, {1e-3: 1.006, 2e-3: 1.0})
     assert long_sweep(ARM) == {1e-3: 1.006, 2e-3: 1.0, 4e-3: None}
-    assert chosen(ARM) is None and long_runs() == []
-    assert long_plan(ARM, 4e-3) in planned()
+    assert chosen(ARM) is None
+    assert protocol(ARM, 32000)[-1] == long_plan(ARM, 4e-3)
     long(ARM, {4e-3: 1.2})
     assert chosen(ARM) == 2e-3
 
@@ -181,32 +188,9 @@ def test_a_diverged_run_loses_and_a_loss_that_is_not_a_number_is_refused() -> No
         short_sweep(ARM)
 
 
-def test_the_driver_trains_one_missing_run_at_a_time_in_plan_order(monkeypatch: pytest.MonkeyPatch) -> None:
-    trained: list[Plan] = []
-
-    def fake(command: list[str], check: bool) -> None:
-        plan = Plan(command[3], int(command[5]), int(command[7]), float(command[9]))
-        trained.append(plan)
-        record(plan, 1.0 + plan.peak_rate + (plan.steps == 8000))
-
-    monkeypatch.setattr(subprocess, "run", fake)
-    monkeypatch.setattr(sweep, "ARMS", (ARM,))
-    monkeypatch.setattr(sweep, "CONFIGS", {ARM: CONFIGS[ARM]})
-    sweep.main()
-    assert trained == [
-        *(Plan(ARM, seed, 8000, 1e-3) for seed in SEEDS),
-        Plan(ARM, 0, 8000, 5e-4),
-        Plan(ARM, 0, 8000, 2e-3),
-        Plan(ARM, 0, 32000, 5e-4),
-        Plan(ARM, 0, 32000, 1e-3),
-        Plan(ARM, 1, 32000, 5e-4),
-        Plan(ARM, 2, 32000, 5e-4),
-    ]
-
-
-def test_the_code_check_trains_at_the_rate_of_the_model_it_must_reproduce() -> None:
-    short("full", {5e-4: 1.3, 1e-3: 1.2, 2e-3: 1.1})
-    assert chosen("own-chunk") is None
-    long("full", {1e-3: 1.004, 2e-3: 1.0})
-    assert chosen("own-chunk") == chosen("full") == 2e-3
-    assert long_runs() == [Plan(config, seed, 32000, 2e-3) for seed in SEEDS for config in ("full", "own-chunk")]
+def test_each_budget_keeps_its_own_long_sweep() -> None:
+    short(ARM, {5e-4: 1.3, 1e-3: 1.2, 2e-3: 1.1})
+    long(ARM, {1e-3: 1.004, 2e-3: 1.0})
+    assert chosen(ARM, 32000) == 2e-3
+    assert chosen(ARM, 128000) is None
+    assert protocol(ARM, 128000) == [*SHORT, long_plan(ARM, 1e-3, 128000), long_plan(ARM, 2e-3, 128000)]

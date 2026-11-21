@@ -14,7 +14,6 @@ from matplotlib.axes import Axes
 from matplotlib.transforms import ScaledTranslation
 
 from weightbank.configs import (
-    CONFIGS,
     FIXED_MAP,
     FULL,
     KEYS,
@@ -23,27 +22,29 @@ from weightbank.configs import (
     NO_ROUTER,
     NOISE_FREE,
     OWN_CHUNK,
+    ROUNDS_ONE_AND_TWO,
     ROUTED,
     ROUTER_VARIANTS,
-    SEEDS,
     SHALLOWER,
     WIDTH,
+    named,
 )
+from weightbank.ledger import ABANDONED, SEEDS, STEPS, Ledger, Row
 from weightbank.sweep import (
-    ARMS,
     FIRST_RATE,
     FIRST_STEPS,
     LONG_STEPS,
-    RATE_FROM,
     SWEEP_SEED,
     Sweep,
     finished,
     long_sweep,
     lowest,
-    planned,
     short_sweep,
 )
-from weightbank.train import LOG_WINDOWS, PickStats, Plan, Run
+from weightbank.train import LOG_WINDOWS, RUNS, PickStats, Plan, Run
+
+ARMS = tuple(name for name in ROUNDS_ONE_AND_TWO if name != OWN_CHUNK)
+RATE_FROM = {OWN_CHUNK: FULL}
 
 TEMPLATE = Path("report.in.md")
 REPORT = Path("report.md")
@@ -75,6 +76,7 @@ COLORS = {
 DODGE = {NO_ROUTER: -9, "both-routed": 0, NOISE_FREE: 9, KEYS: 18}
 MARKERS = {"ff-routed": "D", "attn-routed": "D", "both-routed": "D", NOISE_FREE: "^", KEYS: "v"}
 assert LABELS.keys() == COLORS.keys() == MARKERS.keys() == set(PICKING)
+LATER_DODGE = 9
 
 
 @dataclass
@@ -182,7 +184,7 @@ def table(header: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
     return "\n".join(lines)
 
 
-def runs_table() -> str:
+def runs_table(ledger: Ledger) -> str:
     rows = [
         [
             run.config,
@@ -193,7 +195,7 @@ def runs_table() -> str:
             f"{run.validation_loss:.4f}",
             f"{run.training_seconds:.0f}",
         ]
-        for run in (plan.read() for plan in planned())
+        for run in (Run.read(RUNS.parent / row_run.file) for row in ledger.rows for row_run in row.runs)
     ]
     return table(
         ["configuration", "seed", "steps", "learning rate", "stored weights", "final validation loss", "wall seconds (training)"],
@@ -404,7 +406,7 @@ def versus_table(summaries: dict[str, Summary], names: Sequence[str], against: s
 
 
 def partner(chunks: int) -> str:
-    return FULL if chunks == MODULES else f"plain-l{chunks}"
+    return FULL if chunks == MODULES else named(modules=chunks)
 
 
 def fixed_map_table(first: Budget, long: Budget) -> str:
@@ -547,7 +549,93 @@ def picks_table(summary: Summary) -> str:
     )
 
 
-def panel(axes: Axes, budget: Budget, low: float, high: float, annotate: bool) -> None:
+def cell_text(ledger: Ledger, cell: dict[str, int | str]) -> str:
+    return f"`{ledger.key(ledger.cell(cell))}`"
+
+
+def axes_table(ledger: Ledger) -> str:
+    rows = [
+        [
+            axis.name,
+            axis.meaning,
+            ", ".join(f"**{value}**" if value == axis.default else str(value) for value in axis.tags),
+            ", ".join(f"`{tag}`" for value, tag in axis.tags.items() if value != axis.default or axis.name == STEPS),
+        ]
+        for axis in ledger.axes
+    ]
+    return table(["axis", "meaning", "values (default in bold)", "tags in a run's path"], rows)
+
+
+def cells_table(ledger: Ledger) -> str:
+    rows = []
+    for row in ledger.rows:
+        losses = row.losses
+        rows.append(
+            [
+                f"`{ledger.key(row.cell)}`",
+                *(str(row.cell[axis.name]) for axis in ledger.axes),
+                f"{row.stored_weights:,}",
+                "" if row.rate is None else f"{row.rate:g}",
+                "" if losses is None else f"{fmean(losses):.4f}",
+                "" if losses is None else f"{stdev(losses):.4f}",
+                str(len(row.runs)),
+            ]
+        )
+    return table(
+        ["cell", *(axis.name for axis in ledger.axes), "stored weights", "learning rate", "mean loss", "seed sd", "runs"],
+        rows,
+    )
+
+
+def hypotheses_table(ledger: Ledger) -> str:
+    rows = []
+    for hypothesis in sorted(ledger.hypotheses, key=lambda hypothesis: int(hypothesis["priority"])):
+        settle = [
+            f"{cell_text(ledger, comparison['lower'])} below {cell_text(ledger, comparison['higher'])}: "
+            + (", ".join(f"{difference:+.4f}" for difference in comparison["differences"]) if "differences" in comparison else comparison.get(ABANDONED, "not run"))
+            for comparison in hypothesis["settle"]
+        ]
+        rows.append(
+            [
+                str(hypothesis["priority"]),
+                hypothesis["id"],
+                hypothesis["statement"],
+                "<br>".join(settle) or "no cell",
+                f"**{hypothesis['status']}**",
+            ]
+        )
+    return table(["priority", "hypothesis", "statement", "settling comparisons (lower minus higher, by seed)", "status"], rows)
+
+
+def rounds_text(ledger: Ledger) -> str:
+    parts = []
+    for number, entry in enumerate(ledger.rounds, start=1):
+        lines = [f"### Round {number}: {entry['hypothesis']}", "", entry["why"]]
+        if "reading" in entry:
+            lines += [
+                "",
+                entry["reading"],
+                "",
+                f"{len(entry['runs'])} runs, {entry['gpu_hours']:g} GPU-hours of training against an estimate of "
+                f"{entry['estimated_gpu_hours']:g}; ledger rows written: " + ", ".join(f"`{key}`" for key in entry["rows"]) + ".",
+            ]
+        else:
+            lines += ["", "Not finished."]
+        if "note" in entry:
+            lines += ["", entry["note"]]
+        parts.append("\n".join(lines))
+    return "\n\n".join(parts) or "No round has run."
+
+
+def later_cells(ledger: Ledger, steps: int) -> list[Row]:
+    return [
+        row
+        for row in ledger.rows
+        if row.cell[STEPS] == steps and row.losses is not None and ledger.name(row.cell) not in ROUNDS_ONE_AND_TWO
+    ]
+
+
+def panel(axes: Axes, budget: Budget, later: Sequence[Row], ledger: Ledger, low: float, high: float, annotate: bool) -> None:
     summaries = budget.summaries
     axes.set_facecolor(SURFACE)
     axes.set_xscale("log")
@@ -599,7 +687,28 @@ def panel(axes: Axes, budget: Budget, low: float, high: float, annotate: bool) -
             transform=axes.transData + dodge,
             zorder=4,
         )
+    for index, row in enumerate(later):
+        shade = matplotlib.colormaps["Dark2"](index % 8)
+        losses = row.losses
+        assert losses is not None
+        mean = fmean(losses)
+        axes.errorbar(
+            [row.stored_weights / 1e6],
+            [mean],
+            yerr=[[mean - min(losses)], [max(losses) - mean]],
+            color=shade,
+            marker="*",
+            markersize=11,
+            markeredgecolor=SURFACE,
+            capsize=5,
+            linewidth=1.5,
+            linestyle="none",
+            label=ledger.name(row.cell),
+            transform=axes.transData + ScaledTranslation(LATER_DODGE / 72, 0, axes.figure.dpi_scale_trans),
+            zorder=5,
+        )
     visible = [loss for summary in summaries.values() if low <= summary.stored / 1e6 <= high for loss in summary.losses]
+    visible += [loss for row in later if low <= row.stored_weights / 1e6 <= high for loss in row.losses or ()]
     margin = 0.08 * (max(visible) - min(visible))
     axes.set_xlim(low, high)
     axes.set_ylim(min(visible) - margin, max(visible) + margin)
@@ -621,10 +730,11 @@ def panel(axes: Axes, budget: Budget, low: float, high: float, annotate: bool) -
         axes.spines[side].set_color(GRID)
 
 
-def chart(budget: Budget) -> None:
+def chart(budget: Budget, ledger: Ledger) -> None:
+    later = later_cells(ledger, budget.steps)
     figure, (whole, detail) = plt.subplots(1, 2, figsize=(13, 6.4), dpi=160, facecolor=SURFACE, width_ratios=(1, 1.25))
-    panel(whole, budget, 0.85, 7.4, annotate=True)
-    panel(detail, budget, 3.1, 7.0, annotate=True)
+    panel(whole, budget, later, ledger, 0.85, 7.4, annotate=True)
+    panel(detail, budget, later, ledger, 3.1, 7.0, annotate=True)
     for axes in (whole, detail):
         axes.set_ylabel("validation loss (nats per byte)", color=MUTED)
     whole.set_title("every size", color=MUTED, fontsize=10, loc="left")
@@ -641,7 +751,8 @@ def chart(budget: Budget) -> None:
     figure.text(
         0.5,
         0.005,
-        "The fixed map at 4 chunks and the three both-routed points store the same weights to within 1.2% and are drawn side by side.",
+        "The fixed map at 4 chunks and the three both-routed points store the same weights to within 1.2% and are drawn side by side;"
+        " a star is drawn just right of its stored weights.",
         color=MUTED,
         fontsize=9,
         ha="center",
@@ -651,13 +762,19 @@ def chart(budget: Budget) -> None:
 
 
 def main() -> None:
-    first = read_budget(FIRST_STEPS, {name: FIRST_RATE for name in CONFIGS}, SEEDS)
+    ledger = Ledger.read()
+    ledger.refresh(RUNS)
+    first = read_budget(FIRST_STEPS, {name: FIRST_RATE for name in ROUNDS_ONE_AND_TWO}, SEEDS)
     short = {name: complete(name, short_sweep(name)) for name in ARMS}
     long_sweeps = {name: complete(name, long_sweep(name)) for name in ARMS}
     rates = {name: lowest(sweep) for name, sweep in long_sweeps.items()}
-    long = read_budget(LONG_STEPS, {name: rates[RATE_FROM.get(name, name)] for name in CONFIGS}, SEEDS)
-    chart(long)
+    long = read_budget(LONG_STEPS, {name: rates[RATE_FROM.get(name, name)] for name in ROUNDS_ONE_AND_TWO}, SEEDS)
+    chart(long, ledger)
     sections = {
+        "axes": axes_table(ledger),
+        "hypotheses": hypotheses_table(ledger),
+        "rounds": rounds_text(ledger),
+        "cells": cells_table(ledger),
         "both-budgets": both_budgets_table(first, long),
         "rate-alone": rate_alone_table(
             first,
@@ -678,7 +795,7 @@ def main() -> None:
         "sampled": sampled_table(long.summaries),
         "log-windows": f"{LOG_WINDOWS:,}",
         "pick-variation": pick_variation_table(first, long),
-        "runs": runs_table(),
+        "runs": runs_table(ledger),
         "summary-long": summary_table(long.summaries),
         "summary-first": summary_table(first.summaries),
         **{f"picks:{name}": picks_table(long.summaries[name]) for name in PICKING},

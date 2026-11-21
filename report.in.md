@@ -39,7 +39,73 @@ bars run from the lowest to the highest of three seeds. The dashed line joins th
 module-to-chunk map with no router at 1, 2, 4 and 8 chunks. The fixed map at 4 chunks and the
 three models with both banks routed store the same weights to within 1.2%; their four points
 are drawn side by side so that none hides another, which the chart notes under its panels.
-Points are means of three seeds.
+Points are means of three seeds. A star is a cell tried by a round of the loop described
+next; it is drawn just right of its stored weights so that it hides no point of equal size.
+
+## The design space and the loop
+
+This section is generated from [ledger.json](ledger.json), the record of the design space:
+its axes, every cell tried with the run files behind it, the hypotheses, and each round the
+loop has run. The sections after it write up the two experiments that came before the loop. A cell is one value
+on every axis. A cell's name is the tags of its values that differ from the default, in the
+order of the axes, and `full` when none does; the training budget is the directory the run
+file sits in. Learning rate and seed are not axes: every cell gets its rate from the sweep
+described under "Choosing the learning rate" and is run at three seeds.
+
+### Axes
+
+{{axes}}
+
+Adding an axis or a value is one edit to the ledger's `axes`. Names, the cells a hypothesis
+may name, the loop and the tables here follow from it; cells already tried sit at the new
+axis's default. The model has to know the value: a cell naming one it cannot build is
+refused. With nothing shared, `pick`, `chunks` and `rank` stay at their defaults.
+
+### Hypotheses
+
+A hypothesis claims that one cell reaches a lower validation loss than another, and lists
+the comparisons that would settle it. A comparison is finished when each of its cells has
+three seeds at one learning rate, its own. It favours the hypothesis when the lower cell is
+below the higher one at every seed and the mean difference exceeds both cells' seed spread
+(standard deviation), and goes against it when the lower cell is above by the same test. A
+hypothesis is `supported` when all its comparisons are finished and favour it, `refuted`
+when all go against it, and `open` otherwise; one with no comparison stays open and is
+never picked. A lower priority number is run first. Priorities and hypotheses are edited by
+hand in the ledger; statuses are computed.
+
+{{hypotheses}}
+
+### How a round picks its cell
+
+`python -m weightbank.loop --gpu-hours H` runs one round:
+
+1. Take the open hypotheses that have an unfinished comparison, lowest priority number
+   first, ledger order among equals.
+2. Cost each unfinished comparison: the steps its two cells still lack under the run
+   protocol of "Choosing the learning rate" (three runs at the first budget, at least two
+   at the cell's own budget to choose the rate, then the other two seeds), at the seconds
+   per step of the tried cell that differs on the fewest axes, the slowest among ties.
+3. Pick the first hypothesis with a comparison costing at most H GPU-hours, and its
+   cheapest such comparison. Hypotheses passed over, as too costly or for a rate sweep that
+   cannot go on, are named in the round.
+4. Train what the two cells lack, one run at a time; a cell that already has its three
+   seeds costs nothing. Then rewrite the ledger's cells and statuses from the run files, and
+   this report and chart from the ledger.
+
+The estimate is a floor, since a rate sweep that lands on the edge of its grid adds runs.
+With no hypothesis to pick the loop trains nothing. A comparison whose runs end without
+three finite seeds is marked abandoned in the ledger and not picked again.
+
+### Rounds
+
+{{rounds}}
+
+### Every cell
+
+One row per cell and budget, from the run files; the rate, mean and seed spread are filled
+where three seeds share a rate.
+
+{{cells}}
 
 ## The gaps at both budgets
 
@@ -119,7 +185,7 @@ by a similar amount. The feed-forward routed gap is of that size at both budgets
 - The long sweep starts from two rates per configuration and adds more only under the rule
   above. Six configurations ended with two long rates; a third for each would have added
   about three hours of the GPU.
-- `own-chunk` has no sweep of its own: it is the full control computed through the bank code,
+- `both-c8` has no sweep of its own: it is the full control computed through the bank code,
   so it trains at the full control's rate, which keeps the two paired.
 - The two other routers were run for the model with both banks routed only. Feed-forward-only
   and attention-only versions of them would be four more configurations, about 21 hours of
@@ -154,7 +220,7 @@ by a similar amount. The feed-forward routed gap is of that size at both budgets
   way.
 - Noise-free router (`both-routed-argmax`): the router above, but training takes the
   highest-scoring chunk with no Gumbel noise; the gradient still flows through the softmax.
-- Fixed map (`both-no-router-c1`, `both-no-router-c2`, `both-no-router`, `own-chunk`): no
+- Fixed map (`both-c1`, `both-c2`, `both`, `both-c8`): no
   router; module i always computes with chunk i mod N, for N = 1, 2, 4, 8 chunks of each kind.
   Every module keeps its own layer norms, as in every other configuration. The equal-storage
   plain partner of N chunks is the plain model of N modules (`plain-l1`, `plain-l2`,
@@ -179,12 +245,12 @@ by a similar amount. The feed-forward routed gap is of that size at both budgets
   were trained one at a time. During
   training a routed step computes every chunk for every token (the straight-through gradient
   needs them), which is why routed runs take longer; a hard pick needs only the picked chunk
-  at inference, which this code does not exploit. `own-chunk` and `both-no-router` pay a
+  at inference, which this code does not exploit. `both-c8` and `both` pay a
   bookkeeping cost per chunk that `full` does not, so their times are not comparable to it.
 
 ## Sanity check: N = M, every module forced to its own chunk
 
-`own-chunk` runs the routed code path with a bank of 8 chunks of each kind and no router:
+`both-c8` runs the routed code path with a bank of 8 chunks of each kind and no router:
 module i always computes with chunk i. It starts from the same initial weights and sees the
 same batches as `full` at the same seed, so the comparison is paired by seed. First budget:
 
@@ -203,7 +269,7 @@ The routed code path with N = M reproduces the full control at both budgets.
 
 ## Why did the fixed map beat the learned router?
 
-In the first experiment `both-no-router`, the same two banks with module i fixed to chunk
+In the first experiment `both`, the same two banks with module i fixed to chunk
 i mod 4, beat `both-routed` by 0.045. Two things separate them besides the choice itself: the
 routed model trains under sampling noise (every pick is drawn with Gumbel noise), and its
 router has one particular form. `both-routed-argmax` removes the noise and
@@ -331,7 +397,6 @@ python -m weightbank.train <configuration> --seed <seed> --steps <steps> --rate 
 ```
 
 It writes `runs/<steps>/<configuration>-lr<learning rate>-s<seed>.json`.
-`python -m weightbank.sweep` trains every run of both experiments that `runs/` lacks (the
-first experiment, the short sweep, the long sweep, then the remaining seeds at each
-configuration's rate), and `python -m weightbank.report` rebuilds this file and the
-chart.
+A configuration's name is its cell's name in the ledger. `python -m weightbank.loop
+--gpu-hours <hours>` picks and trains the next cell, and `python -m weightbank.report`
+rebuilds this file and the chart.

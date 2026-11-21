@@ -39,7 +39,124 @@ bars run from the lowest to the highest of three seeds. The dashed line joins th
 module-to-chunk map with no router at 1, 2, 4 and 8 chunks. The fixed map at 4 chunks and the
 three models with both banks routed store the same weights to within 1.2%; their four points
 are drawn side by side so that none hides another, which the chart notes under its panels.
-Points are means of three seeds.
+Points are means of three seeds. A star is a cell tried by a round of the loop described next,
+after the first two experiments; it is drawn beside the fixed-map square that stores the same
+weights.
+
+## The design space and the loop
+
+The rest of this report writes up the first two experiments. This section is generated from
+[ledger.json](ledger.json), the record of the design space: its axes, every cell tried with
+the run files behind it, the hypotheses, and each round the loop has run. A cell is one value
+on every axis. A cell's name is the tags of its values that differ from the default, in the
+order of the axes, and `full` when none does; the training budget is the directory the run
+file sits in. Learning rate and seed are not axes: every cell gets its rate from the sweep
+described under "Choosing the learning rate" and is run at three seeds.
+
+### Axes
+
+| axis | meaning | values (default in bold) | tags in a run's path |
+|---|---|---|---|
+| shared | which weights the modules draw from a bank instead of owning: none, feed-forward, attention or both | **none**, ff, attn, both | `ff`, `attn`, `both` |
+| pick | how a module gets its chunk: fixed is module i to chunk i mod N; routed is a per-token learned pick sampled with noise; argmax the same without noise; keys scores a learned key per chunk; frozen is routed until a quarter of training, then each module keeps its most common pick; stopped is routed with the router's weights held still after that quarter | **fixed**, routed, argmax, keys, frozen, stopped | `routed`, `routed-argmax`, `routed-keys`, `frozen-picks`, `stopped-router` |
+| chunks | bank size: chunks stored per shared kind | 1, 2, **4**, 8 | `c1`, `c2`, `c8` |
+| rank | rank of a low-rank correction each module adds to the shared chunk it uses; 0 is none | **0**, 24, 48 | `r24`, `r48` |
+| modules | compute modules (layers) | 1, 2, 4, 6, **8** | `plain-l1`, `plain-l2`, `plain-l4`, `plain-l6` |
+| width | hidden width | 96, 128, 160, 192, 224, **256** | `plain-w96`, `plain-w128`, `plain-w160`, `plain-w192`, `plain-w224` |
+| steps | training budget in optimizer steps; the tag is the directory under runs/ | **8000**, 32000, 128000 | `8000`, `32000`, `128000` |
+
+Adding an axis or a value is one edit to the ledger's `axes`. Names, the cells a hypothesis
+may name, the loop and the tables here follow from it; cells already tried sit at the new
+axis's default. A value the model cannot build is refused when a cell names it.
+
+### Hypotheses
+
+A hypothesis claims that one cell reaches a lower validation loss than another, and lists
+the comparisons that would settle it. A comparison is finished when both of its cells have
+three seeds at one learning rate. Statuses come from finished comparisons alone: `supported`
+when the lower cell is below the higher one at every seed, `refuted` when it is above at
+every seed, `open` otherwise, and `open` while finished comparisons of one hypothesis
+disagree. A lower priority number is run first; priorities and hypotheses are edited by
+hand in the ledger, statuses never.
+
+| priority | hypothesis | statement | settling comparisons (lower minus higher, by seed) | status |
+|---|---|---|---|---|
+| 1 | low-rank-correction | A shared bank plus a low-rank correction per module beats plain sharing at equal stored weights: the fixed map with N chunks and the correction reaches a lower loss than the fixed map with 2N chunks, which stores the same number of weights to within 0.2%. | `32000/both-c1-r24` below `32000/both-c2`: not run<br>`32000/both-c2-r48` below `32000/both`: not run | **open** |
+| 3 | picking-lock-in | A per-input pick loses to the fixed map because routers lock in early, near-random picks: with each module frozen to its router's most common pick after a quarter of training, the model still loses to the fixed map of module i to chunk i mod N. | `32000/both` below `32000/both-frozen-picks`: not run | **open** |
+| 3 | picking-chase | A per-input pick loses because chunks and router chase each other: holding the router's weights still after a quarter of training beats letting it learn throughout. | `32000/both-stopped-router` below `32000/both-routed`: not run | **open** |
+| 3 | picking-worse-function | A per-input pick loses because mixing chunks token by token is a worse function than one chunk per module, even under a router that no longer moves: frozen picks beat a stopped router. | `32000/both-frozen-picks` below `32000/both-stopped-router`: not run | **open** |
+| 4 | picking-too-few-steps | A per-input pick loses only because the budget is short: at four times the long budget the routed model reaches a lower loss than the fixed map. | `128000/both-routed` below `128000/both`: not run | **open** |
+| 5 | compress-a-trained-model | A trained unshared model can be compressed into a shared bank and keep a lower loss than the same shared model trained from scratch. Explored outside this loop, so it names no cell here; it needs an axis for how training starts before it can. | no cell | **open** |
+| 9 | reuse-beats-fewer-modules | Eight modules reusing N chunks beat the plain model of N modules, which stores the same chunks and applies each once. | `32000/both-c1` below `32000/plain-l1`: -0.2580, -0.2593, -0.2622<br>`32000/both-c2` below `32000/plain-l2`: -0.0634, -0.0611, -0.0555<br>`32000/both` below `32000/plain-l4`: -0.0195, -0.0198, -0.0164 | **supported** |
+| 9 | routing-beats-the-fixed-map | A per-input pick over the two banks beats the fixed map over the same banks. | `32000/both-routed` below `32000/both`: +0.0194, +0.0200, +0.0167<br>`32000/both-routed-argmax` below `32000/both`: +0.0361, +0.0310, +0.0304<br>`32000/both-routed-keys` below `32000/both`: +0.0224, +0.0168, +0.0167 | **refuted** |
+
+### How a round picks its cell
+
+`python -m weightbank.loop --gpu-hours H` runs one round:
+
+1. Take the open hypotheses that have an unfinished comparison, lowest priority number
+   first, ledger order among equals.
+2. Cost each unfinished comparison: the steps its two cells still lack under the run
+   protocol (three short runs for the rate, at least two long runs to choose it, the other
+   two seeds), at the seconds per step of the tried cell that differs on the fewest axes,
+   the slowest among ties.
+3. Pick the first hypothesis with a comparison costing at most H GPU-hours, and its
+   cheapest such comparison. Hypotheses passed over as too costly are named in the round.
+4. Train what the two cells lack, one run at a time, the higher cell first: a control that
+   already has its runs costs nothing. Then rewrite the ledger's cells and statuses from the
+   run files, and this report and chart from the ledger.
+
+The estimate is a floor, since a rate sweep that lands on the edge of its grid adds runs.
+
+### Rounds
+
+No round has run.
+
+### Every cell
+
+One row per cell and budget, from the run files; the rate, mean and seed spread are filled
+where three seeds share a rate.
+
+| cell | shared | pick | chunks | rank | modules | width | steps | stored weights | learning rate | mean loss | seed sd | runs |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `32000/attn-routed` | attn | routed | 4 | 0 | 8 | 256 | 32000 | 5,480,004 | 0.002 | 1.0137 | 0.0032 | 4 |
+| `32000/both-c1` | both | fixed | 1 | 0 | 8 | 256 | 32000 | 994,304 | 0.002 | 1.1177 | 0.0008 | 5 |
+| `32000/both-c2` | both | fixed | 2 | 0 | 8 | 256 | 32000 | 1,783,040 | 0.001 | 1.0583 | 0.0039 | 5 |
+| `32000/both-c8` | both | fixed | 8 | 0 | 8 | 256 | 32000 | 6,515,456 | 0.002 | 0.9841 | 0.0008 | 3 |
+| `32000/both` | both | fixed | 4 | 0 | 8 | 256 | 32000 | 3,360,512 | 0.002 | 1.0134 | 0.0012 | 4 |
+| `32000/both-routed-argmax` | both | argmax | 4 | 0 | 8 | 256 | 32000 | 3,394,952 | 0.002 | 1.0459 | 0.0021 | 5 |
+| `32000/both-routed-keys` | both | keys | 4 | 0 | 8 | 256 | 32000 | 3,398,016 | 0.002 | 1.0321 | 0.0022 | 5 |
+| `32000/both-routed` | both | routed | 4 | 0 | 8 | 256 | 32000 | 3,394,952 | 0.002 | 1.0321 | 0.0013 | 5 |
+| `32000/ff-routed` | ff | routed | 4 | 0 | 8 | 256 | 32000 | 4,430,404 | 0.002 | 1.0090 | 0.0014 | 4 |
+| `32000/full` | none | fixed | 4 | 0 | 8 | 256 | 32000 | 6,515,456 | 0.002 | 0.9833 | 0.0012 | 5 |
+| `32000/plain-l1` | none | fixed | 4 | 0 | 1 | 256 | 32000 | 987,136 | 0.002 | 1.3775 | 0.0013 | 4 |
+| `32000/plain-l2` | none | fixed | 4 | 0 | 2 | 256 | 32000 | 1,776,896 | 0.002 | 1.1183 | 0.0004 | 4 |
+| `32000/plain-l4` | none | fixed | 4 | 0 | 4 | 256 | 32000 | 3,356,416 | 0.002 | 1.0320 | 0.0013 | 5 |
+| `32000/plain-l6` | none | fixed | 4 | 0 | 6 | 256 | 32000 | 4,935,936 | 0.002 | 1.0019 | 0.0022 | 5 |
+| `32000/plain-w128` | none | fixed | 4 | 0 | 8 | 128 | 32000 | 1,684,992 | 0.004 | 1.0779 | 0.0060 | 6 |
+| `32000/plain-w160` | none | fixed | 4 | 0 | 8 | 160 | 32000 | 2,597,696 | 0.004 | 1.0413 | 0.0017 | 6 |
+| `32000/plain-w192` | none | fixed | 4 | 0 | 8 | 192 | 32000 | 3,707,008 | 0.002 | 1.0138 | 0.0014 | 5 |
+| `32000/plain-w224` | none | fixed | 4 | 0 | 8 | 224 | 32000 | 5,012,928 | 0.002 | 0.9980 | 0.0038 | 5 |
+| `32000/plain-w96` | none | fixed | 4 | 0 | 8 | 96 | 32000 | 968,896 | 0.002 | 1.1598 | 0.0010 | 4 |
+| `8000/attn-routed` | attn | routed | 4 | 0 | 8 | 256 | 8000 | 5,480,004 | 0.001 | 1.1146 | 0.0024 | 5 |
+| `8000/both-c1` | both | fixed | 1 | 0 | 8 | 256 | 8000 | 994,304 | 0.001 | 1.2054 | 0.0056 | 5 |
+| `8000/both-c2` | both | fixed | 2 | 0 | 8 | 256 | 8000 | 1,783,040 | 0.001 | 1.1384 | 0.0073 | 5 |
+| `8000/both-c8` | both | fixed | 8 | 0 | 8 | 256 | 8000 | 6,515,456 | 0.001 | 1.0768 | 0.0023 | 3 |
+| `8000/both` | both | fixed | 4 | 0 | 8 | 256 | 8000 | 3,360,512 | 0.001 | 1.1004 | 0.0049 | 5 |
+| `8000/both-routed-argmax` | both | argmax | 4 | 0 | 8 | 256 | 8000 | 3,394,952 | 0.001 | 1.1581 | 0.0024 | 5 |
+| `8000/both-routed-keys` | both | keys | 4 | 0 | 8 | 256 | 8000 | 3,398,016 | 0.001 | 1.1506 | 0.0088 | 5 |
+| `8000/both-routed` | both | routed | 4 | 0 | 8 | 256 | 8000 | 3,394,952 | 0.001 | 1.1452 | 0.0042 | 5 |
+| `8000/ff-routed` | ff | routed | 4 | 0 | 8 | 256 | 8000 | 4,430,404 | 0.001 | 1.0977 | 0.0048 | 5 |
+| `8000/full` | none | fixed | 4 | 0 | 8 | 256 | 8000 | 6,515,456 | 0.001 | 1.0767 | 0.0021 | 5 |
+| `8000/plain-l1` | none | fixed | 4 | 0 | 1 | 256 | 8000 | 987,136 | 0.001 | 1.4265 | 0.0017 | 5 |
+| `8000/plain-l2` | none | fixed | 4 | 0 | 2 | 256 | 8000 | 1,776,896 | 0.001 | 1.1775 | 0.0025 | 5 |
+| `8000/plain-l4` | none | fixed | 4 | 0 | 4 | 256 | 8000 | 3,356,416 | 0.001 | 1.1158 | 0.0052 | 5 |
+| `8000/plain-l6` | none | fixed | 4 | 0 | 6 | 256 | 8000 | 4,935,936 | 0.001 | 1.0952 | 0.0080 | 5 |
+| `8000/plain-w128` | none | fixed | 4 | 0 | 8 | 128 | 8000 | 1,684,992 | 0.001 | 1.1939 | 0.0067 | 5 |
+| `8000/plain-w160` | none | fixed | 4 | 0 | 8 | 160 | 8000 | 2,597,696 | 0.001 | 1.1544 | 0.0043 | 5 |
+| `8000/plain-w192` | none | fixed | 4 | 0 | 8 | 192 | 8000 | 3,707,008 | 0.001 | 1.1177 | 0.0027 | 5 |
+| `8000/plain-w224` | none | fixed | 4 | 0 | 8 | 224 | 8000 | 5,012,928 | 0.001 | 1.0974 | 0.0056 | 5 |
+| `8000/plain-w96` | none | fixed | 4 | 0 | 8 | 96 | 8000 | 968,896 | 0.001 | 1.2616 | 0.0040 | 5 |
 
 ## The gaps at both budgets
 
@@ -58,10 +175,10 @@ column without seed 0 is the gap over the two seeds that took no part in the cho
 | both-routed | 3,394,952 | 0.001 | +0.0300 | +0.0202 to +0.0354 | 0.002 | +0.0116 | +0.0107 to +0.0124 | +0.0111 | -0.0185 |
 | both-routed-argmax | 3,394,952 | 0.001 | +0.0429 | +0.0389 to +0.0484 | 0.002 | +0.0253 | +0.0225 to +0.0291 | +0.0235 | -0.0176 |
 | both-routed-keys | 3,398,016 | 0.001 | +0.0355 | +0.0281 to +0.0492 | 0.002 | +0.0115 | +0.0083 to +0.0154 | +0.0096 | -0.0240 |
-| both-no-router-c1 | 994,304 | 0.001 | -0.0530 | -0.0550 to -0.0499 | 0.002 | -0.0384 | -0.0397 to -0.0371 | -0.0384 | +0.0146 |
-| both-no-router-c2 | 1,783,040 | 0.001 | -0.0388 | -0.0433 to -0.0313 | 0.001 | -0.0147 | -0.0232 to -0.0053 | -0.0105 | +0.0240 |
-| both-no-router | 3,360,512 | 0.001 | -0.0153 | -0.0170 to -0.0136 | 0.002 | -0.0080 | -0.0093 to -0.0067 | -0.0080 | +0.0073 |
-| own-chunk | 6,515,456 | 0.001 | +0.0001 | -0.0001 to +0.0004 | 0.002 | +0.0008 | -0.0005 to +0.0025 | -0.0001 | +0.0007 |
+| both-c1 | 994,304 | 0.001 | -0.0530 | -0.0550 to -0.0499 | 0.002 | -0.0384 | -0.0397 to -0.0371 | -0.0384 | +0.0146 |
+| both-c2 | 1,783,040 | 0.001 | -0.0388 | -0.0433 to -0.0313 | 0.001 | -0.0147 | -0.0232 to -0.0053 | -0.0105 | +0.0240 |
+| both | 3,360,512 | 0.001 | -0.0153 | -0.0170 to -0.0136 | 0.002 | -0.0080 | -0.0093 to -0.0067 | -0.0080 | +0.0073 |
+| both-c8 | 6,515,456 | 0.001 | +0.0001 | -0.0001 to +0.0004 | 0.002 | +0.0008 | -0.0005 to +0.0025 | -0.0001 | +0.0007 |
 
 Between the two budgets both the learning rate and the number of steps change. The next
 table changes the rate alone: the first budget, seed 0 only, with every configuration at 1e-3
@@ -79,9 +196,9 @@ gap.
 | both-routed | shallower | +0.0345 | 0.002 | +0.0232 | -0.0114 |
 | both-routed-argmax | shallower | +0.0484 | 0.002 | +0.0384 | -0.0101 |
 | both-routed-keys | shallower | +0.0492 | 0.002 | +0.0277 | -0.0215 |
-| both-no-router-c1 | narrower | -0.0499 | 0.002 | -0.0479 | +0.0020 |
-| both-no-router-c2 | shallower | -0.0433 | 0.002 | -0.0460 | -0.0027 |
-| both-no-router | shallower | -0.0136 | 0.002 | -0.0180 | -0.0044 |
+| both-c1 | narrower | -0.0499 | 0.002 | -0.0479 | +0.0020 |
+| both-c2 | shallower | -0.0433 | 0.002 | -0.0460 | -0.0027 |
+| both | shallower | -0.0136 | 0.002 | -0.0180 | -0.0044 |
 
 The plain curves the gaps are read against, at both budgets:
 
@@ -107,10 +224,10 @@ The plain curves the gaps are read against, at both budgets:
 | both-routed | 0.002 | 3,394,952 | 1.0322 | 0.0013 | 1.0206 | +0.0116 | 1.0311 | +0.0011 | +0.0116 |
 | both-routed-argmax | 0.002 | 3,394,952 | 1.0459 | 0.0021 | 1.0206 | +0.0253 | 1.0311 | +0.0148 | +0.0253 |
 | both-routed-keys | 0.002 | 3,398,016 | 1.0321 | 0.0022 | 1.0205 | +0.0115 | 1.0310 | +0.0010 | +0.0115 |
-| both-no-router-c1 | 0.002 | 994,304 | 1.1177 | 0.0008 | 1.1560 | -0.0384 | 1.3743 | -0.2567 | -0.0384 |
-| both-no-router-c2 | 0.001 | 1,783,040 | 1.0583 | 0.0039 | 1.0731 | -0.0147 | 1.1179 | -0.0595 | -0.0147 |
-| both-no-router | 0.002 | 3,360,512 | 1.0134 | 0.0012 | 1.0214 | -0.0080 | 1.0319 | -0.0185 | -0.0080 |
-| own-chunk | 0.002 | 6,515,456 | 0.9841 | 0.0008 | 0.9833 | +0.0008 | 0.9833 | +0.0008 | +0.0008 |
+| both-c1 | 0.002 | 994,304 | 1.1177 | 0.0008 | 1.1560 | -0.0384 | 1.3743 | -0.2567 | -0.0384 |
+| both-c2 | 0.001 | 1,783,040 | 1.0583 | 0.0039 | 1.0731 | -0.0147 | 1.1179 | -0.0595 | -0.0147 |
+| both | 0.002 | 3,360,512 | 1.0134 | 0.0012 | 1.0214 | -0.0080 | 1.0319 | -0.0185 | -0.0080 |
+| both-c8 | 0.002 | 6,515,456 | 0.9841 | 0.0008 | 0.9833 | +0.0008 | 0.9833 | +0.0008 | +0.0008 |
 
 ### First budget, both plain curves
 
@@ -121,10 +238,10 @@ The plain curves the gaps are read against, at both budgets:
 | both-routed | 0.001 | 3,394,952 | 1.1452 | 0.0041 | 1.1268 | +0.0184 | 1.1152 | +0.0300 | +0.0300 |
 | both-routed-argmax | 0.001 | 3,394,952 | 1.1581 | 0.0024 | 1.1268 | +0.0313 | 1.1152 | +0.0429 | +0.0429 |
 | both-routed-keys | 0.001 | 3,398,016 | 1.1506 | 0.0088 | 1.1267 | +0.0239 | 1.1151 | +0.0355 | +0.0355 |
-| both-no-router-c1 | 0.001 | 994,304 | 1.2054 | 0.0056 | 1.2584 | -0.0530 | 1.4235 | -0.2181 | -0.0530 |
-| both-no-router-c2 | 0.001 | 1,783,040 | 1.1384 | 0.0073 | 1.1887 | -0.0503 | 1.1771 | -0.0388 | -0.0388 |
-| both-no-router | 0.001 | 3,360,512 | 1.1004 | 0.0049 | 1.1278 | -0.0274 | 1.1157 | -0.0153 | -0.0153 |
-| own-chunk | 0.001 | 6,515,456 | 1.0768 | 0.0023 | 1.0767 | +0.0001 | 1.0767 | +0.0001 | +0.0001 |
+| both-c1 | 0.001 | 994,304 | 1.2054 | 0.0056 | 1.2584 | -0.0530 | 1.4235 | -0.2181 | -0.0530 |
+| both-c2 | 0.001 | 1,783,040 | 1.1384 | 0.0073 | 1.1887 | -0.0503 | 1.1771 | -0.0388 | -0.0388 |
+| both | 0.001 | 3,360,512 | 1.1004 | 0.0049 | 1.1278 | -0.0274 | 1.1157 | -0.0153 | -0.0153 |
+| both-c8 | 0.001 | 6,515,456 | 1.0768 | 0.0023 | 1.0767 | +0.0001 | 1.0767 | +0.0001 | +0.0001 |
 
 `both-routed` and `plain-l4` are an equal-storage pair that needs no interpolation: the same 4
 feed-forward and 4 attention chunks, applied 8 times with routing or 4 times without. The
@@ -157,9 +274,9 @@ is behind it.
 | both-routed | 1.1906 | 1.1455 | **1.1208** | 0.002 | 0.0247 |
 | both-routed-argmax | 1.2087 | 1.1594 | **1.1360** | 0.002 | 0.0234 |
 | both-routed-keys | 1.1991 | 1.1602 | **1.1253** | 0.002 | 0.0349 |
-| both-no-router-c1 | 1.2404 | 1.2107 | **1.1797** | 0.002 | 0.0310 |
-| both-no-router-c2 | 1.1882 | 1.1313 | **1.1195** | 0.002 | 0.0118 |
-| both-no-router | 1.1466 | 1.0976 | **1.0802** | 0.002 | 0.0174 |
+| both-c1 | 1.2404 | 1.2107 | **1.1797** | 0.002 | 0.0310 |
+| both-c2 | 1.1882 | 1.1313 | **1.1195** | 0.002 | 0.0118 |
+| both | 1.1466 | 1.0976 | **1.0802** | 0.002 | 0.0174 |
 
 Every configuration's best short rate is 2e-3, the highest of the three, by 0.005 to 0.036
 over 1e-3: a short budget rewards a high rate. A rate chosen here would therefore say more
@@ -193,9 +310,9 @@ finite is recorded with an infinite loss and loses.
 | both-routed |  | 1.0394 | **1.0316** | 1.0366 |  | 0.002 | 0.0049 |
 | both-routed-argmax |  | 1.0593 | **1.0483** | 1.2190 |  | 0.002 | 0.0110 |
 | both-routed-keys |  | 1.0477 | **1.0346** | 1.0362 |  | 0.002 | 0.0016 |
-| both-no-router-c1 |  | 1.1267 | **1.1184** | 1.1207 |  | 0.002 | 0.0023 |
-| both-no-router-c2 | 1.0752 | **1.0548** | 1.0553 |  |  | 0.001 | 0.0004 |
-| both-no-router |  | 1.0167 | **1.0122** |  |  | 0.002 | 0.0045 |
+| both-c1 |  | 1.1267 | **1.1184** | 1.1207 |  | 0.002 | 0.0023 |
+| both-c2 | 1.0752 | **1.0548** | 1.0553 |  |  | 0.001 | 0.0004 |
+| both |  | 1.0167 | **1.0122** |  |  | 0.002 | 0.0045 |
 
 Limits of this choice: it is made on one seed, so where two rates differ by less than the
 seed spread the pick between them is arbitrary; and a winner that is the best short rate
@@ -207,7 +324,7 @@ by a similar amount. The feed-forward routed gap is of that size at both budgets
 - The long sweep starts from two rates per configuration and adds more only under the rule
   above. Six configurations ended with two long rates; a third for each would have added
   about three hours of the GPU.
-- `own-chunk` has no sweep of its own: it is the full control computed through the bank code,
+- `both-c8` has no sweep of its own: it is the full control computed through the bank code,
   so it trains at the full control's rate, which keeps the two paired.
 - The two other routers were run for the model with both banks routed only. Feed-forward-only
   and attention-only versions of them would be four more configurations, about 21 hours of
@@ -242,7 +359,7 @@ by a similar amount. The feed-forward routed gap is of that size at both budgets
   way.
 - Noise-free router (`both-routed-argmax`): the router above, but training takes the
   highest-scoring chunk with no Gumbel noise; the gradient still flows through the softmax.
-- Fixed map (`both-no-router-c1`, `both-no-router-c2`, `both-no-router`, `own-chunk`): no
+- Fixed map (`both-c1`, `both-c2`, `both`, `both-c8`): no
   router; module i always computes with chunk i mod N, for N = 1, 2, 4, 8 chunks of each kind.
   Every module keeps its own layer norms, as in every other configuration. The equal-storage
   plain partner of N chunks is the plain model of N modules (`plain-l1`, `plain-l2`,
@@ -267,28 +384,28 @@ by a similar amount. The feed-forward routed gap is of that size at both budgets
   were trained one at a time. During
   training a routed step computes every chunk for every token (the straight-through gradient
   needs them), which is why routed runs take longer; a hard pick needs only the picked chunk
-  at inference, which this code does not exploit. `own-chunk` and `both-no-router` pay a
+  at inference, which this code does not exploit. `both-c8` and `both` pay a
   bookkeeping cost per chunk that `full` does not, so their times are not comparable to it.
 
 ## Sanity check: N = M, every module forced to its own chunk
 
-`own-chunk` runs the routed code path with a bank of 8 chunks of each kind and no router:
+`both-c8` runs the routed code path with a bank of 8 chunks of each kind and no router:
 module i always computes with chunk i. It starts from the same initial weights and sees the
 same batches as `full` at the same seed, so the comparison is paired by seed. First budget:
 
 | configuration | stored weights | seed 0 | seed 1 | seed 2 | mean | seed sd |
 |---|---|---|---|---|---|---|
 | full | 6,515,456 | 1.0784 | 1.0744 | 1.0772 | 1.0767 | 0.0021 |
-| own-chunk | 6,515,456 | 1.0788 | 1.0743 | 1.0773 | 1.0768 | 0.0023 |
-| own-chunk minus full |  | +0.0004 | -0.0001 | +0.0000 | +0.0001 |  |
+| both-c8 | 6,515,456 | 1.0788 | 1.0743 | 1.0773 | 1.0768 | 0.0023 |
+| both-c8 minus full |  | +0.0004 | -0.0001 | +0.0000 | +0.0001 |  |
 
 Long budget, both at the full control's rate:
 
 | configuration | stored weights | seed 0 | seed 1 | seed 2 | mean | seed sd |
 |---|---|---|---|---|---|---|
 | full | 6,515,456 | 0.9819 | 0.9843 | 0.9837 | 0.9833 | 0.0012 |
-| own-chunk | 6,515,456 | 0.9845 | 0.9847 | 0.9832 | 0.9841 | 0.0008 |
-| own-chunk minus full |  | +0.0025 | +0.0004 | -0.0005 | +0.0008 |  |
+| both-c8 | 6,515,456 | 0.9845 | 0.9847 | 0.9832 | 0.9841 | 0.0008 |
+| both-c8 minus full |  | +0.0025 | +0.0004 | -0.0005 | +0.0008 |  |
 
 At the first budget the per-seed differences (+0.0004, -0.0001, +0.0000) are a fifth or less
 of the full control's seed sd (0.0021). At the long budget they are +0.0025, +0.0004 and
@@ -299,25 +416,25 @@ The routed code path with N = M reproduces the full control at both budgets.
 
 ## Why did the fixed map beat the learned router?
 
-In the first experiment `both-no-router`, the same two banks with module i fixed to chunk
+In the first experiment `both`, the same two banks with module i fixed to chunk
 i mod 4, beat `both-routed` by 0.045. Two things separate them besides the choice itself: the
 routed model trains under sampling noise (every pick is drawn with Gumbel noise), and its
 router has one particular form. `both-routed-argmax` removes the noise and
 `both-routed-keys` changes the form. All four store the same banks; at the same seed they
 see the same batches. Long budget, each at its chosen rate:
 
-| configuration | learning rate | stored weights | seed 0 | seed 1 | seed 2 | mean | seed sd | minus both-no-router | lowest to highest seed |
+| configuration | learning rate | stored weights | seed 0 | seed 1 | seed 2 | mean | seed sd | minus both | lowest to highest seed |
 |---|---|---|---|---|---|---|---|---|---|
-| both-no-router | 0.002 | 3,360,512 | 1.0122 | 1.0136 | 1.0145 | 1.0134 | 0.0012 |  |  |
+| both | 0.002 | 3,360,512 | 1.0122 | 1.0136 | 1.0145 | 1.0134 | 0.0012 |  |  |
 | both-routed | 0.002 | 3,394,952 | 1.0316 | 1.0336 | 1.0312 | 1.0322 | 0.0013 | +0.0187 | +0.0167 to +0.0200 |
 | both-routed-argmax | 0.002 | 3,394,952 | 1.0483 | 1.0446 | 1.0449 | 1.0459 | 0.0021 | +0.0325 | +0.0304 to +0.0361 |
 | both-routed-keys | 0.002 | 3,398,016 | 1.0346 | 1.0304 | 1.0312 | 1.0321 | 0.0022 | +0.0186 | +0.0167 to +0.0225 |
 
 First budget, every one at 1e-3:
 
-| configuration | learning rate | stored weights | seed 0 | seed 1 | seed 2 | mean | seed sd | minus both-no-router | lowest to highest seed |
+| configuration | learning rate | stored weights | seed 0 | seed 1 | seed 2 | mean | seed sd | minus both | lowest to highest seed |
 |---|---|---|---|---|---|---|---|---|---|
-| both-no-router | 0.001 | 3,360,512 | 1.0976 | 1.0975 | 1.1061 | 1.1004 | 0.0049 |  |  |
+| both | 0.001 | 3,360,512 | 1.0976 | 1.0975 | 1.1061 | 1.1004 | 0.0049 |  |  |
 | both-routed | 0.001 | 3,394,952 | 1.1455 | 1.1492 | 1.1409 | 1.1452 | 0.0041 | +0.0448 | +0.0348 to +0.0516 |
 | both-routed-argmax | 0.001 | 3,394,952 | 1.1594 | 1.1553 | 1.1596 | 1.1581 | 0.0024 | +0.0577 | +0.0535 to +0.0618 |
 | both-routed-keys | 0.001 | 3,398,016 | 1.1602 | 1.1429 | 1.1488 | 1.1506 | 0.0088 | +0.0502 | +0.0427 to +0.0625 |
@@ -348,10 +465,10 @@ curve at its stored weights.
 
 | chunks | configuration | stored weights | plain partner | loss, 8,000 steps | partner's loss | minus partner | lowest to highest seed | gap to the plain curve | curve | loss, 32,000 steps | partner's loss | minus partner | lowest to highest seed | gap to the plain curve | curve |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 1 | both-no-router-c1 | 994,304 | plain-l1 | 1.2054 | 1.4265 | -0.2211 | -0.2289 to -0.2147 | -0.0530 | narrower | 1.1177 | 1.3775 | -0.2599 | -0.2623 to -0.2580 | -0.0384 | narrower |
-| 2 | both-no-router-c2 | 1,783,040 | plain-l2 | 1.1384 | 1.1775 | -0.0391 | -0.0437 to -0.0316 | -0.0388 | shallower | 1.0583 | 1.1184 | -0.0600 | -0.0634 to -0.0555 | -0.0147 | narrower |
-| 4 | both-no-router | 3,360,512 | plain-l4 | 1.1004 | 1.1158 | -0.0153 | -0.0171 to -0.0136 | -0.0153 | shallower | 1.0134 | 1.0320 | -0.0186 | -0.0198 to -0.0164 | -0.0080 | narrower |
-| 8 | own-chunk | 6,515,456 | full | 1.0768 | 1.0767 | +0.0001 | -0.0001 to +0.0004 | +0.0001 | narrower | 0.9841 | 0.9833 | +0.0008 | -0.0005 to +0.0025 | +0.0008 | narrower |
+| 1 | both-c1 | 994,304 | plain-l1 | 1.2054 | 1.4265 | -0.2211 | -0.2289 to -0.2147 | -0.0530 | narrower | 1.1177 | 1.3775 | -0.2599 | -0.2623 to -0.2580 | -0.0384 | narrower |
+| 2 | both-c2 | 1,783,040 | plain-l2 | 1.1384 | 1.1775 | -0.0391 | -0.0437 to -0.0316 | -0.0388 | shallower | 1.0583 | 1.1184 | -0.0600 | -0.0634 to -0.0555 | -0.0147 | narrower |
+| 4 | both | 3,360,512 | plain-l4 | 1.1004 | 1.1158 | -0.0153 | -0.0171 to -0.0136 | -0.0153 | shallower | 1.0134 | 1.0320 | -0.0186 | -0.0198 to -0.0164 | -0.0080 | narrower |
+| 8 | both-c8 | 6,515,456 | full | 1.0768 | 1.0767 | +0.0001 | -0.0001 to +0.0004 | +0.0001 | narrower | 0.9841 | 0.9833 | +0.0008 | -0.0005 to +0.0025 | +0.0008 | narrower |
 
 The gain from reuse grows as the chunks get fewer. Against the plain model that stores the
 same chunks and applies each once, 8 modules reusing them are better by 0.260 at 1 chunk,
@@ -402,10 +519,10 @@ windows, to show whether the ordering at the end of the budget was still moving.
 | both-routed | 1.2727 | 1.2048 | 1.1670 | 1.1394 | 1.1101 | 1.0852 | 1.0645 | 1.0547 |
 | both-routed-argmax | 1.2988 | 1.2272 | 1.1871 | 1.1573 | 1.1269 | 1.1026 | 1.0778 | 1.0686 |
 | both-routed-keys | 1.2689 | 1.2004 | 1.1645 | 1.1356 | 1.1076 | 1.0841 | 1.0632 | 1.0537 |
-| both-no-router-c1 | 1.3212 | 1.2677 | 1.2380 | 1.2131 | 1.1892 | 1.1671 | 1.1499 | 1.1414 |
-| both-no-router-c2 | 1.2701 | 1.2052 | 1.1705 | 1.1441 | 1.1216 | 1.1025 | 1.0874 | 1.0803 |
-| both-no-router | 1.2228 | 1.1680 | 1.1386 | 1.1129 | 1.0865 | 1.0637 | 1.0443 | 1.0346 |
-| own-chunk | 1.1946 | 1.1377 | 1.1089 | 1.0834 | 1.0559 | 1.0339 | 1.0137 | 1.0054 |
+| both-c1 | 1.3212 | 1.2677 | 1.2380 | 1.2131 | 1.1892 | 1.1671 | 1.1499 | 1.1414 |
+| both-c2 | 1.2701 | 1.2052 | 1.1705 | 1.1441 | 1.1216 | 1.1025 | 1.0874 | 1.0803 |
+| both | 1.2228 | 1.1680 | 1.1386 | 1.1129 | 1.0865 | 1.0637 | 1.0443 | 1.0346 |
+| both-c8 | 1.1946 | 1.1377 | 1.1089 | 1.0834 | 1.0559 | 1.0339 | 1.0137 | 1.0054 |
 
 ## How much picks vary by input
 
@@ -502,10 +619,10 @@ Long budget:
 | both-routed | 0.002 | 3,394,952 | 1.0322 | 0.0013 | 1.0312 | 1.0336 |
 | both-routed-argmax | 0.002 | 3,394,952 | 1.0459 | 0.0021 | 1.0446 | 1.0483 |
 | both-routed-keys | 0.002 | 3,398,016 | 1.0321 | 0.0022 | 1.0304 | 1.0346 |
-| both-no-router-c1 | 0.002 | 994,304 | 1.1177 | 0.0008 | 1.1168 | 1.1184 |
-| both-no-router-c2 | 0.001 | 1,783,040 | 1.0583 | 0.0039 | 1.0548 | 1.0625 |
-| both-no-router | 0.002 | 3,360,512 | 1.0134 | 0.0012 | 1.0122 | 1.0145 |
-| own-chunk | 0.002 | 6,515,456 | 0.9841 | 0.0008 | 0.9832 | 0.9847 |
+| both-c1 | 0.002 | 994,304 | 1.1177 | 0.0008 | 1.1168 | 1.1184 |
+| both-c2 | 0.001 | 1,783,040 | 1.0583 | 0.0039 | 1.0548 | 1.0625 |
+| both | 0.002 | 3,360,512 | 1.0134 | 0.0012 | 1.0122 | 1.0145 |
+| both-c8 | 0.002 | 6,515,456 | 0.9841 | 0.0008 | 0.9832 | 0.9847 |
 
 First budget:
 
@@ -526,10 +643,10 @@ First budget:
 | both-routed | 0.001 | 3,394,952 | 1.1452 | 0.0041 | 1.1409 | 1.1492 |
 | both-routed-argmax | 0.001 | 3,394,952 | 1.1581 | 0.0024 | 1.1553 | 1.1596 |
 | both-routed-keys | 0.001 | 3,398,016 | 1.1506 | 0.0088 | 1.1429 | 1.1602 |
-| both-no-router-c1 | 0.001 | 994,304 | 1.2054 | 0.0056 | 1.1996 | 1.2107 |
-| both-no-router-c2 | 0.001 | 1,783,040 | 1.1384 | 0.0073 | 1.1313 | 1.1459 |
-| both-no-router | 0.001 | 3,360,512 | 1.1004 | 0.0049 | 1.0975 | 1.1061 |
-| own-chunk | 0.001 | 6,515,456 | 1.0768 | 0.0023 | 1.0743 | 1.0788 |
+| both-c1 | 0.001 | 994,304 | 1.2054 | 0.0056 | 1.1996 | 1.2107 |
+| both-c2 | 0.001 | 1,783,040 | 1.1384 | 0.0073 | 1.1313 | 1.1459 |
+| both | 0.001 | 3,360,512 | 1.1004 | 0.0049 | 1.0975 | 1.1061 |
+| both-c8 | 0.001 | 6,515,456 | 1.0768 | 0.0023 | 1.0743 | 1.0788 |
 
 ## Every run
 
@@ -537,188 +654,188 @@ Both experiments and the learning-rate sweep, from the run files.
 
 | configuration | seed | steps | learning rate | stored weights | final validation loss | wall seconds (training) |
 |---|---|---|---|---|---|---|
-| full | 0 | 8,000 | 0.001 | 6,515,456 | 1.0784 | 492 |
-| plain-w96 | 0 | 8,000 | 0.001 | 968,896 | 1.2638 | 182 |
-| plain-w128 | 0 | 8,000 | 0.001 | 1,684,992 | 1.1949 | 261 |
-| plain-w160 | 0 | 8,000 | 0.001 | 2,597,696 | 1.1503 | 342 |
-| plain-w192 | 0 | 8,000 | 0.001 | 3,707,008 | 1.1194 | 443 |
-| plain-w224 | 0 | 8,000 | 0.001 | 5,012,928 | 1.0915 | 479 |
-| plain-l1 | 0 | 8,000 | 0.001 | 987,136 | 1.4254 | 78 |
-| plain-l2 | 0 | 8,000 | 0.001 | 1,776,896 | 1.1750 | 117 |
-| plain-l4 | 0 | 8,000 | 0.001 | 3,356,416 | 1.1113 | 260 |
-| plain-l6 | 0 | 8,000 | 0.001 | 4,935,936 | 1.1021 | 565 |
-| ff-routed | 0 | 8,000 | 0.001 | 4,430,404 | 1.1011 | 2010 |
-| attn-routed | 0 | 8,000 | 0.001 | 5,480,004 | 1.1166 | 1050 |
-| both-routed | 0 | 8,000 | 0.001 | 3,394,952 | 1.1455 | 1602 |
-| both-routed-argmax | 0 | 8,000 | 0.001 | 3,394,952 | 1.1594 | 1440 |
-| both-routed-keys | 0 | 8,000 | 0.001 | 3,398,016 | 1.1602 | 1438 |
-| both-no-router-c1 | 0 | 8,000 | 0.001 | 994,304 | 1.2107 | 416 |
-| both-no-router-c2 | 0 | 8,000 | 0.001 | 1,783,040 | 1.1313 | 430 |
-| both-no-router | 0 | 8,000 | 0.001 | 3,360,512 | 1.0976 | 494 |
-| own-chunk | 0 | 8,000 | 0.001 | 6,515,456 | 1.0788 | 533 |
-| full | 1 | 8,000 | 0.001 | 6,515,456 | 1.0744 | 409 |
-| plain-w96 | 1 | 8,000 | 0.001 | 968,896 | 1.2569 | 181 |
-| plain-w128 | 1 | 8,000 | 0.001 | 1,684,992 | 1.1867 | 207 |
-| plain-w160 | 1 | 8,000 | 0.001 | 2,597,696 | 1.1540 | 282 |
-| plain-w192 | 1 | 8,000 | 0.001 | 3,707,008 | 1.1191 | 321 |
-| plain-w224 | 1 | 8,000 | 0.001 | 5,012,928 | 1.0979 | 373 |
-| plain-l1 | 1 | 8,000 | 0.001 | 987,136 | 1.4285 | 72 |
-| plain-l2 | 1 | 8,000 | 0.001 | 1,776,896 | 1.1799 | 114 |
-| plain-l4 | 1 | 8,000 | 0.001 | 3,356,416 | 1.1146 | 218 |
-| plain-l6 | 1 | 8,000 | 0.001 | 4,935,936 | 1.0864 | 304 |
-| ff-routed | 1 | 8,000 | 0.001 | 4,430,404 | 1.0998 | 964 |
-| attn-routed | 1 | 8,000 | 0.001 | 5,480,004 | 1.1119 | 1011 |
-| both-routed | 1 | 8,000 | 0.001 | 3,394,952 | 1.1492 | 1586 |
-| both-routed-argmax | 1 | 8,000 | 0.001 | 3,394,952 | 1.1553 | 1446 |
-| both-routed-keys | 1 | 8,000 | 0.001 | 3,398,016 | 1.1429 | 1439 |
-| both-no-router-c1 | 1 | 8,000 | 0.001 | 994,304 | 1.1996 | 407 |
-| both-no-router-c2 | 1 | 8,000 | 0.001 | 1,783,040 | 1.1379 | 418 |
-| both-no-router | 1 | 8,000 | 0.001 | 3,360,512 | 1.0975 | 501 |
-| own-chunk | 1 | 8,000 | 0.001 | 6,515,456 | 1.0743 | 550 |
-| full | 2 | 8,000 | 0.001 | 6,515,456 | 1.0772 | 426 |
-| plain-w96 | 2 | 8,000 | 0.001 | 968,896 | 1.2640 | 179 |
-| plain-w128 | 2 | 8,000 | 0.001 | 1,684,992 | 1.2000 | 243 |
-| plain-w160 | 2 | 8,000 | 0.001 | 2,597,696 | 1.1589 | 310 |
-| plain-w192 | 2 | 8,000 | 0.001 | 3,707,008 | 1.1146 | 348 |
-| plain-w224 | 2 | 8,000 | 0.001 | 5,012,928 | 1.1027 | 373 |
-| plain-l1 | 2 | 8,000 | 0.001 | 987,136 | 1.4257 | 63 |
-| plain-l2 | 2 | 8,000 | 0.001 | 1,776,896 | 1.1775 | 108 |
-| plain-l4 | 2 | 8,000 | 0.001 | 3,356,416 | 1.1214 | 208 |
-| plain-l6 | 2 | 8,000 | 0.001 | 4,935,936 | 1.0971 | 304 |
-| ff-routed | 2 | 8,000 | 0.001 | 4,430,404 | 1.0923 | 923 |
-| attn-routed | 2 | 8,000 | 0.001 | 5,480,004 | 1.1152 | 919 |
-| both-routed | 2 | 8,000 | 0.001 | 3,394,952 | 1.1409 | 1454 |
-| both-routed-argmax | 2 | 8,000 | 0.001 | 3,394,952 | 1.1596 | 1442 |
-| both-routed-keys | 2 | 8,000 | 0.001 | 3,398,016 | 1.1488 | 1448 |
-| both-no-router-c1 | 2 | 8,000 | 0.001 | 994,304 | 1.2059 | 410 |
-| both-no-router-c2 | 2 | 8,000 | 0.001 | 1,783,040 | 1.1459 | 421 |
-| both-no-router | 2 | 8,000 | 0.001 | 3,360,512 | 1.1061 | 504 |
-| own-chunk | 2 | 8,000 | 0.001 | 6,515,456 | 1.0773 | 489 |
-| full | 0 | 8,000 | 0.0005 | 6,515,456 | 1.1072 | 380 |
-| full | 0 | 8,000 | 0.002 | 6,515,456 | 1.0538 | 397 |
-| plain-w96 | 0 | 8,000 | 0.0005 | 968,896 | 1.3421 | 185 |
-| plain-w96 | 0 | 8,000 | 0.002 | 968,896 | 1.2306 | 201 |
-| plain-w128 | 0 | 8,000 | 0.0005 | 1,684,992 | 1.2433 | 198 |
-| plain-w128 | 0 | 8,000 | 0.002 | 1,684,992 | 1.1674 | 198 |
-| plain-w160 | 0 | 8,000 | 0.0005 | 2,597,696 | 1.1878 | 272 |
-| plain-w160 | 0 | 8,000 | 0.002 | 2,597,696 | 1.1185 | 272 |
-| plain-w192 | 0 | 8,000 | 0.0005 | 3,707,008 | 1.1527 | 303 |
-| plain-w192 | 0 | 8,000 | 0.002 | 3,707,008 | 1.0837 | 304 |
-| plain-w224 | 0 | 8,000 | 0.0005 | 5,012,928 | 1.1208 | 353 |
-| plain-w224 | 0 | 8,000 | 0.002 | 5,012,928 | 1.0648 | 353 |
-| plain-l1 | 0 | 8,000 | 0.0005 | 987,136 | 1.4541 | 63 |
-| plain-l1 | 0 | 8,000 | 0.002 | 987,136 | 1.4204 | 293 |
-| plain-l2 | 0 | 8,000 | 0.0005 | 1,776,896 | 1.2171 | 648 |
-| plain-l2 | 0 | 8,000 | 0.002 | 1,776,896 | 1.1659 | 121 |
-| plain-l4 | 0 | 8,000 | 0.0005 | 3,356,416 | 1.1657 | 199 |
-| plain-l4 | 0 | 8,000 | 0.002 | 3,356,416 | 1.0984 | 199 |
-| plain-l6 | 0 | 8,000 | 0.0005 | 4,935,936 | 1.1317 | 291 |
-| plain-l6 | 0 | 8,000 | 0.002 | 4,935,936 | 1.0743 | 291 |
-| ff-routed | 0 | 8,000 | 0.0005 | 4,430,404 | 1.1460 | 962 |
-| ff-routed | 0 | 8,000 | 0.002 | 4,430,404 | 1.0884 | 916 |
-| attn-routed | 0 | 8,000 | 0.0005 | 5,480,004 | 1.1429 | 910 |
-| attn-routed | 0 | 8,000 | 0.002 | 5,480,004 | 1.0961 | 912 |
-| both-routed | 0 | 8,000 | 0.0005 | 3,394,952 | 1.1906 | 1450 |
-| both-routed | 0 | 8,000 | 0.002 | 3,394,952 | 1.1208 | 1468 |
-| both-routed-argmax | 0 | 8,000 | 0.0005 | 3,394,952 | 1.2087 | 1622 |
-| both-routed-argmax | 0 | 8,000 | 0.002 | 3,394,952 | 1.1360 | 1526 |
-| both-routed-keys | 0 | 8,000 | 0.0005 | 3,398,016 | 1.1991 | 1545 |
-| both-routed-keys | 0 | 8,000 | 0.002 | 3,398,016 | 1.1253 | 1492 |
-| both-no-router-c1 | 0 | 8,000 | 0.0005 | 994,304 | 1.2404 | 469 |
-| both-no-router-c1 | 0 | 8,000 | 0.002 | 994,304 | 1.1797 | 457 |
-| both-no-router-c2 | 0 | 8,000 | 0.0005 | 1,783,040 | 1.1882 | 429 |
-| both-no-router-c2 | 0 | 8,000 | 0.002 | 1,783,040 | 1.1195 | 436 |
-| both-no-router | 0 | 8,000 | 0.0005 | 3,360,512 | 1.1466 | 446 |
-| both-no-router | 0 | 8,000 | 0.002 | 3,360,512 | 1.0802 | 662 |
+| attn-routed | 0 | 32,000 | 0.001 | 5,480,004 | 1.0163 | 5024 |
+| attn-routed | 0 | 32,000 | 0.002 | 5,480,004 | 1.0117 | 3851 |
+| attn-routed | 1 | 32,000 | 0.002 | 5,480,004 | 1.0119 | 5449 |
+| attn-routed | 2 | 32,000 | 0.002 | 5,480,004 | 1.0174 | 3644 |
+| both-c1 | 0 | 32,000 | 0.001 | 994,304 | 1.1267 | 1604 |
+| both-c1 | 0 | 32,000 | 0.002 | 994,304 | 1.1184 | 1725 |
+| both-c1 | 1 | 32,000 | 0.002 | 994,304 | 1.1178 | 1622 |
+| both-c1 | 2 | 32,000 | 0.002 | 994,304 | 1.1168 | 1693 |
+| both-c1 | 0 | 32,000 | 0.004 | 994,304 | 1.1207 | 1754 |
+| both-c2 | 0 | 32,000 | 0.0005 | 1,783,040 | 1.0752 | 1765 |
+| both-c2 | 0 | 32,000 | 0.001 | 1,783,040 | 1.0548 | 1792 |
+| both-c2 | 1 | 32,000 | 0.001 | 1,783,040 | 1.0577 | 1731 |
+| both-c2 | 2 | 32,000 | 0.001 | 1,783,040 | 1.0625 | 2168 |
+| both-c2 | 0 | 32,000 | 0.002 | 1,783,040 | 1.0553 | 1778 |
+| both-c8 | 0 | 32,000 | 0.002 | 6,515,456 | 0.9845 | 2059 |
+| both-c8 | 1 | 32,000 | 0.002 | 6,515,456 | 0.9847 | 2103 |
+| both-c8 | 2 | 32,000 | 0.002 | 6,515,456 | 0.9832 | 2487 |
+| both | 0 | 32,000 | 0.001 | 3,360,512 | 1.0167 | 1868 |
+| both | 0 | 32,000 | 0.002 | 3,360,512 | 1.0122 | 1852 |
+| both | 1 | 32,000 | 0.002 | 3,360,512 | 1.0136 | 1743 |
+| both | 2 | 32,000 | 0.002 | 3,360,512 | 1.0145 | 2197 |
+| both-routed-argmax | 0 | 32,000 | 0.001 | 3,394,952 | 1.0593 | 5772 |
+| both-routed-argmax | 0 | 32,000 | 0.002 | 3,394,952 | 1.0483 | 5771 |
+| both-routed-argmax | 1 | 32,000 | 0.002 | 3,394,952 | 1.0446 | 5803 |
+| both-routed-argmax | 2 | 32,000 | 0.002 | 3,394,952 | 1.0449 | 5827 |
+| both-routed-argmax | 0 | 32,000 | 0.004 | 3,394,952 | 1.2190 | 5767 |
+| both-routed-keys | 0 | 32,000 | 0.001 | 3,398,016 | 1.0477 | 5745 |
+| both-routed-keys | 0 | 32,000 | 0.002 | 3,398,016 | 1.0346 | 5717 |
+| both-routed-keys | 1 | 32,000 | 0.002 | 3,398,016 | 1.0304 | 10529 |
+| both-routed-keys | 2 | 32,000 | 0.002 | 3,398,016 | 1.0312 | 5773 |
+| both-routed-keys | 0 | 32,000 | 0.004 | 3,398,016 | 1.0362 | 5720 |
+| both-routed | 0 | 32,000 | 0.001 | 3,394,952 | 1.0394 | 7041 |
+| both-routed | 0 | 32,000 | 0.002 | 3,394,952 | 1.0316 | 5788 |
+| both-routed | 1 | 32,000 | 0.002 | 3,394,952 | 1.0336 | 5865 |
+| both-routed | 2 | 32,000 | 0.002 | 3,394,952 | 1.0312 | 5859 |
+| both-routed | 0 | 32,000 | 0.004 | 3,394,952 | 1.0366 | 6741 |
+| ff-routed | 0 | 32,000 | 0.001 | 4,430,404 | 1.0123 | 3709 |
+| ff-routed | 0 | 32,000 | 0.002 | 4,430,404 | 1.0098 | 8366 |
+| ff-routed | 1 | 32,000 | 0.002 | 4,430,404 | 1.0099 | 3872 |
+| ff-routed | 2 | 32,000 | 0.002 | 4,430,404 | 1.0074 | 3728 |
 | full | 0 | 32,000 | 0.001 | 6,515,456 | 1.0003 | 2008 |
 | full | 0 | 32,000 | 0.002 | 6,515,456 | 0.9819 | 2089 |
+| full | 1 | 32,000 | 0.002 | 6,515,456 | 0.9843 | 1569 |
+| full | 2 | 32,000 | 0.002 | 6,515,456 | 0.9837 | 1509 |
 | full | 0 | 32,000 | 0.004 | 6,515,456 | 0.9840 | 1865 |
-| plain-w96 | 0 | 32,000 | 0.001 | 968,896 | 1.1649 | 919 |
-| plain-w96 | 0 | 32,000 | 0.002 | 968,896 | 1.1602 | 767 |
+| plain-l1 | 0 | 32,000 | 0.001 | 987,136 | 1.3788 | 254 |
+| plain-l1 | 0 | 32,000 | 0.002 | 987,136 | 1.3764 | 252 |
+| plain-l1 | 1 | 32,000 | 0.002 | 987,136 | 1.3771 | 302 |
+| plain-l1 | 2 | 32,000 | 0.002 | 987,136 | 1.3790 | 252 |
+| plain-l2 | 0 | 32,000 | 0.001 | 1,776,896 | 1.1195 | 439 |
+| plain-l2 | 0 | 32,000 | 0.002 | 1,776,896 | 1.1182 | 538 |
+| plain-l2 | 1 | 32,000 | 0.002 | 1,776,896 | 1.1188 | 454 |
+| plain-l2 | 2 | 32,000 | 0.002 | 1,776,896 | 1.1180 | 428 |
+| plain-l4 | 0 | 32,000 | 0.001 | 3,356,416 | 1.0388 | 901 |
+| plain-l4 | 0 | 32,000 | 0.002 | 3,356,416 | 1.0317 | 822 |
+| plain-l4 | 1 | 32,000 | 0.002 | 3,356,416 | 1.0334 | 801 |
+| plain-l4 | 2 | 32,000 | 0.002 | 3,356,416 | 1.0309 | 784 |
+| plain-l4 | 0 | 32,000 | 0.004 | 3,356,416 | 1.0372 | 867 |
+| plain-l6 | 0 | 32,000 | 0.001 | 4,935,936 | 1.0215 | 1150 |
+| plain-l6 | 0 | 32,000 | 0.002 | 4,935,936 | 1.0043 | 1146 |
+| plain-l6 | 1 | 32,000 | 0.002 | 4,935,936 | 1.0002 | 1161 |
+| plain-l6 | 2 | 32,000 | 0.002 | 4,935,936 | 1.0011 | 1251 |
+| plain-l6 | 0 | 32,000 | 0.004 | 4,935,936 | 1.0072 | 1151 |
 | plain-w128 | 0 | 32,000 | 0.001 | 1,684,992 | 1.1100 | 1124 |
 | plain-w128 | 0 | 32,000 | 0.002 | 1,684,992 | 1.1017 | 1056 |
 | plain-w128 | 0 | 32,000 | 0.004 | 1,684,992 | 1.0838 | 837 |
+| plain-w128 | 1 | 32,000 | 0.004 | 1,684,992 | 1.0780 | 854 |
+| plain-w128 | 2 | 32,000 | 0.004 | 1,684,992 | 1.0719 | 815 |
 | plain-w128 | 0 | 32,000 | 0.008 | 1,684,992 | 1.0862 | 1090 |
 | plain-w160 | 0 | 32,000 | 0.001 | 2,597,696 | 1.0679 | 1528 |
 | plain-w160 | 0 | 32,000 | 0.002 | 2,597,696 | 1.0484 | 1298 |
 | plain-w160 | 0 | 32,000 | 0.004 | 2,597,696 | 1.0399 | 1315 |
+| plain-w160 | 1 | 32,000 | 0.004 | 2,597,696 | 1.0432 | 1145 |
+| plain-w160 | 2 | 32,000 | 0.004 | 2,597,696 | 1.0409 | 1729 |
 | plain-w160 | 0 | 32,000 | 0.008 | 2,597,696 | 1.0499 | 1303 |
 | plain-w192 | 0 | 32,000 | 0.001 | 3,707,008 | 1.0406 | 1282 |
 | plain-w192 | 0 | 32,000 | 0.002 | 3,707,008 | 1.0125 | 1431 |
+| plain-w192 | 1 | 32,000 | 0.002 | 3,707,008 | 1.0152 | 1223 |
+| plain-w192 | 2 | 32,000 | 0.002 | 3,707,008 | 1.0138 | 1679 |
 | plain-w192 | 0 | 32,000 | 0.004 | 3,707,008 | 1.0145 | 1326 |
 | plain-w224 | 0 | 32,000 | 0.001 | 5,012,928 | 1.0124 | 1440 |
 | plain-w224 | 0 | 32,000 | 0.002 | 5,012,928 | 0.9946 | 1415 |
-| plain-w224 | 0 | 32,000 | 0.004 | 5,012,928 | 0.9991 | 1414 |
-| plain-l1 | 0 | 32,000 | 0.001 | 987,136 | 1.3788 | 254 |
-| plain-l1 | 0 | 32,000 | 0.002 | 987,136 | 1.3764 | 252 |
-| plain-l2 | 0 | 32,000 | 0.001 | 1,776,896 | 1.1195 | 439 |
-| plain-l2 | 0 | 32,000 | 0.002 | 1,776,896 | 1.1182 | 538 |
-| plain-l4 | 0 | 32,000 | 0.001 | 3,356,416 | 1.0388 | 901 |
-| plain-l4 | 0 | 32,000 | 0.002 | 3,356,416 | 1.0317 | 822 |
-| plain-l4 | 0 | 32,000 | 0.004 | 3,356,416 | 1.0372 | 867 |
-| plain-l6 | 0 | 32,000 | 0.001 | 4,935,936 | 1.0215 | 1150 |
-| plain-l6 | 0 | 32,000 | 0.002 | 4,935,936 | 1.0043 | 1146 |
-| plain-l6 | 0 | 32,000 | 0.004 | 4,935,936 | 1.0072 | 1151 |
-| ff-routed | 0 | 32,000 | 0.001 | 4,430,404 | 1.0123 | 3709 |
-| ff-routed | 0 | 32,000 | 0.002 | 4,430,404 | 1.0098 | 8366 |
-| attn-routed | 0 | 32,000 | 0.001 | 5,480,004 | 1.0163 | 5024 |
-| attn-routed | 0 | 32,000 | 0.002 | 5,480,004 | 1.0117 | 3851 |
-| both-routed | 0 | 32,000 | 0.001 | 3,394,952 | 1.0394 | 7041 |
-| both-routed | 0 | 32,000 | 0.002 | 3,394,952 | 1.0316 | 5788 |
-| both-routed | 0 | 32,000 | 0.004 | 3,394,952 | 1.0366 | 6741 |
-| both-routed-argmax | 0 | 32,000 | 0.001 | 3,394,952 | 1.0593 | 5772 |
-| both-routed-argmax | 0 | 32,000 | 0.002 | 3,394,952 | 1.0483 | 5771 |
-| both-routed-argmax | 0 | 32,000 | 0.004 | 3,394,952 | 1.2190 | 5767 |
-| both-routed-keys | 0 | 32,000 | 0.001 | 3,398,016 | 1.0477 | 5745 |
-| both-routed-keys | 0 | 32,000 | 0.002 | 3,398,016 | 1.0346 | 5717 |
-| both-routed-keys | 0 | 32,000 | 0.004 | 3,398,016 | 1.0362 | 5720 |
-| both-no-router-c1 | 0 | 32,000 | 0.001 | 994,304 | 1.1267 | 1604 |
-| both-no-router-c1 | 0 | 32,000 | 0.002 | 994,304 | 1.1184 | 1725 |
-| both-no-router-c1 | 0 | 32,000 | 0.004 | 994,304 | 1.1207 | 1754 |
-| both-no-router-c2 | 0 | 32,000 | 0.0005 | 1,783,040 | 1.0752 | 1765 |
-| both-no-router-c2 | 0 | 32,000 | 0.001 | 1,783,040 | 1.0548 | 1792 |
-| both-no-router-c2 | 0 | 32,000 | 0.002 | 1,783,040 | 1.0553 | 1778 |
-| both-no-router | 0 | 32,000 | 0.001 | 3,360,512 | 1.0167 | 1868 |
-| both-no-router | 0 | 32,000 | 0.002 | 3,360,512 | 1.0122 | 1852 |
-| own-chunk | 0 | 32,000 | 0.002 | 6,515,456 | 0.9845 | 2059 |
-| full | 1 | 32,000 | 0.002 | 6,515,456 | 0.9843 | 1569 |
-| plain-w96 | 1 | 32,000 | 0.002 | 968,896 | 1.1587 | 771 |
-| plain-w128 | 1 | 32,000 | 0.004 | 1,684,992 | 1.0780 | 854 |
-| plain-w160 | 1 | 32,000 | 0.004 | 2,597,696 | 1.0432 | 1145 |
-| plain-w192 | 1 | 32,000 | 0.002 | 3,707,008 | 1.0152 | 1223 |
 | plain-w224 | 1 | 32,000 | 0.002 | 5,012,928 | 1.0021 | 1458 |
-| plain-l1 | 1 | 32,000 | 0.002 | 987,136 | 1.3771 | 302 |
-| plain-l2 | 1 | 32,000 | 0.002 | 1,776,896 | 1.1188 | 454 |
-| plain-l4 | 1 | 32,000 | 0.002 | 3,356,416 | 1.0334 | 801 |
-| plain-l6 | 1 | 32,000 | 0.002 | 4,935,936 | 1.0002 | 1161 |
-| ff-routed | 1 | 32,000 | 0.002 | 4,430,404 | 1.0099 | 3872 |
-| attn-routed | 1 | 32,000 | 0.002 | 5,480,004 | 1.0119 | 5449 |
-| both-routed | 1 | 32,000 | 0.002 | 3,394,952 | 1.0336 | 5865 |
-| both-routed-argmax | 1 | 32,000 | 0.002 | 3,394,952 | 1.0446 | 5803 |
-| both-routed-keys | 1 | 32,000 | 0.002 | 3,398,016 | 1.0304 | 10529 |
-| both-no-router-c1 | 1 | 32,000 | 0.002 | 994,304 | 1.1178 | 1622 |
-| both-no-router-c2 | 1 | 32,000 | 0.001 | 1,783,040 | 1.0577 | 1731 |
-| both-no-router | 1 | 32,000 | 0.002 | 3,360,512 | 1.0136 | 1743 |
-| own-chunk | 1 | 32,000 | 0.002 | 6,515,456 | 0.9847 | 2103 |
-| full | 2 | 32,000 | 0.002 | 6,515,456 | 0.9837 | 1509 |
-| plain-w96 | 2 | 32,000 | 0.002 | 968,896 | 1.1606 | 688 |
-| plain-w128 | 2 | 32,000 | 0.004 | 1,684,992 | 1.0719 | 815 |
-| plain-w160 | 2 | 32,000 | 0.004 | 2,597,696 | 1.0409 | 1729 |
-| plain-w192 | 2 | 32,000 | 0.002 | 3,707,008 | 1.0138 | 1679 |
 | plain-w224 | 2 | 32,000 | 0.002 | 5,012,928 | 0.9973 | 1431 |
-| plain-l1 | 2 | 32,000 | 0.002 | 987,136 | 1.3790 | 252 |
-| plain-l2 | 2 | 32,000 | 0.002 | 1,776,896 | 1.1180 | 428 |
-| plain-l4 | 2 | 32,000 | 0.002 | 3,356,416 | 1.0309 | 784 |
-| plain-l6 | 2 | 32,000 | 0.002 | 4,935,936 | 1.0011 | 1251 |
-| ff-routed | 2 | 32,000 | 0.002 | 4,430,404 | 1.0074 | 3728 |
-| attn-routed | 2 | 32,000 | 0.002 | 5,480,004 | 1.0174 | 3644 |
-| both-routed | 2 | 32,000 | 0.002 | 3,394,952 | 1.0312 | 5859 |
-| both-routed-argmax | 2 | 32,000 | 0.002 | 3,394,952 | 1.0449 | 5827 |
-| both-routed-keys | 2 | 32,000 | 0.002 | 3,398,016 | 1.0312 | 5773 |
-| both-no-router-c1 | 2 | 32,000 | 0.002 | 994,304 | 1.1168 | 1693 |
-| both-no-router-c2 | 2 | 32,000 | 0.001 | 1,783,040 | 1.0625 | 2168 |
-| both-no-router | 2 | 32,000 | 0.002 | 3,360,512 | 1.0145 | 2197 |
-| own-chunk | 2 | 32,000 | 0.002 | 6,515,456 | 0.9832 | 2487 |
+| plain-w224 | 0 | 32,000 | 0.004 | 5,012,928 | 0.9991 | 1414 |
+| plain-w96 | 0 | 32,000 | 0.001 | 968,896 | 1.1649 | 919 |
+| plain-w96 | 0 | 32,000 | 0.002 | 968,896 | 1.1602 | 767 |
+| plain-w96 | 1 | 32,000 | 0.002 | 968,896 | 1.1587 | 771 |
+| plain-w96 | 2 | 32,000 | 0.002 | 968,896 | 1.1606 | 688 |
+| attn-routed | 0 | 8,000 | 0.0005 | 5,480,004 | 1.1429 | 910 |
+| attn-routed | 0 | 8,000 | 0.001 | 5,480,004 | 1.1166 | 1050 |
+| attn-routed | 1 | 8,000 | 0.001 | 5,480,004 | 1.1119 | 1011 |
+| attn-routed | 2 | 8,000 | 0.001 | 5,480,004 | 1.1152 | 919 |
+| attn-routed | 0 | 8,000 | 0.002 | 5,480,004 | 1.0961 | 912 |
+| both-c1 | 0 | 8,000 | 0.0005 | 994,304 | 1.2404 | 469 |
+| both-c1 | 0 | 8,000 | 0.001 | 994,304 | 1.2107 | 416 |
+| both-c1 | 1 | 8,000 | 0.001 | 994,304 | 1.1996 | 407 |
+| both-c1 | 2 | 8,000 | 0.001 | 994,304 | 1.2059 | 410 |
+| both-c1 | 0 | 8,000 | 0.002 | 994,304 | 1.1797 | 457 |
+| both-c2 | 0 | 8,000 | 0.0005 | 1,783,040 | 1.1882 | 429 |
+| both-c2 | 0 | 8,000 | 0.001 | 1,783,040 | 1.1313 | 430 |
+| both-c2 | 1 | 8,000 | 0.001 | 1,783,040 | 1.1379 | 418 |
+| both-c2 | 2 | 8,000 | 0.001 | 1,783,040 | 1.1459 | 421 |
+| both-c2 | 0 | 8,000 | 0.002 | 1,783,040 | 1.1195 | 436 |
+| both-c8 | 0 | 8,000 | 0.001 | 6,515,456 | 1.0788 | 533 |
+| both-c8 | 1 | 8,000 | 0.001 | 6,515,456 | 1.0743 | 550 |
+| both-c8 | 2 | 8,000 | 0.001 | 6,515,456 | 1.0773 | 489 |
+| both | 0 | 8,000 | 0.0005 | 3,360,512 | 1.1466 | 446 |
+| both | 0 | 8,000 | 0.001 | 3,360,512 | 1.0976 | 494 |
+| both | 1 | 8,000 | 0.001 | 3,360,512 | 1.0975 | 501 |
+| both | 2 | 8,000 | 0.001 | 3,360,512 | 1.1061 | 504 |
+| both | 0 | 8,000 | 0.002 | 3,360,512 | 1.0802 | 662 |
+| both-routed-argmax | 0 | 8,000 | 0.0005 | 3,394,952 | 1.2087 | 1622 |
+| both-routed-argmax | 0 | 8,000 | 0.001 | 3,394,952 | 1.1594 | 1440 |
+| both-routed-argmax | 1 | 8,000 | 0.001 | 3,394,952 | 1.1553 | 1446 |
+| both-routed-argmax | 2 | 8,000 | 0.001 | 3,394,952 | 1.1596 | 1442 |
+| both-routed-argmax | 0 | 8,000 | 0.002 | 3,394,952 | 1.1360 | 1526 |
+| both-routed-keys | 0 | 8,000 | 0.0005 | 3,398,016 | 1.1991 | 1545 |
+| both-routed-keys | 0 | 8,000 | 0.001 | 3,398,016 | 1.1602 | 1438 |
+| both-routed-keys | 1 | 8,000 | 0.001 | 3,398,016 | 1.1429 | 1439 |
+| both-routed-keys | 2 | 8,000 | 0.001 | 3,398,016 | 1.1488 | 1448 |
+| both-routed-keys | 0 | 8,000 | 0.002 | 3,398,016 | 1.1253 | 1492 |
+| both-routed | 0 | 8,000 | 0.0005 | 3,394,952 | 1.1906 | 1450 |
+| both-routed | 0 | 8,000 | 0.001 | 3,394,952 | 1.1455 | 1602 |
+| both-routed | 1 | 8,000 | 0.001 | 3,394,952 | 1.1492 | 1586 |
+| both-routed | 2 | 8,000 | 0.001 | 3,394,952 | 1.1409 | 1454 |
+| both-routed | 0 | 8,000 | 0.002 | 3,394,952 | 1.1208 | 1468 |
+| ff-routed | 0 | 8,000 | 0.0005 | 4,430,404 | 1.1460 | 962 |
+| ff-routed | 0 | 8,000 | 0.001 | 4,430,404 | 1.1011 | 2010 |
+| ff-routed | 1 | 8,000 | 0.001 | 4,430,404 | 1.0998 | 964 |
+| ff-routed | 2 | 8,000 | 0.001 | 4,430,404 | 1.0923 | 923 |
+| ff-routed | 0 | 8,000 | 0.002 | 4,430,404 | 1.0884 | 916 |
+| full | 0 | 8,000 | 0.0005 | 6,515,456 | 1.1072 | 380 |
+| full | 0 | 8,000 | 0.001 | 6,515,456 | 1.0784 | 492 |
+| full | 1 | 8,000 | 0.001 | 6,515,456 | 1.0744 | 409 |
+| full | 2 | 8,000 | 0.001 | 6,515,456 | 1.0772 | 426 |
+| full | 0 | 8,000 | 0.002 | 6,515,456 | 1.0538 | 397 |
+| plain-l1 | 0 | 8,000 | 0.0005 | 987,136 | 1.4541 | 63 |
+| plain-l1 | 0 | 8,000 | 0.001 | 987,136 | 1.4254 | 78 |
+| plain-l1 | 1 | 8,000 | 0.001 | 987,136 | 1.4285 | 72 |
+| plain-l1 | 2 | 8,000 | 0.001 | 987,136 | 1.4257 | 63 |
+| plain-l1 | 0 | 8,000 | 0.002 | 987,136 | 1.4204 | 293 |
+| plain-l2 | 0 | 8,000 | 0.0005 | 1,776,896 | 1.2171 | 648 |
+| plain-l2 | 0 | 8,000 | 0.001 | 1,776,896 | 1.1750 | 117 |
+| plain-l2 | 1 | 8,000 | 0.001 | 1,776,896 | 1.1799 | 114 |
+| plain-l2 | 2 | 8,000 | 0.001 | 1,776,896 | 1.1775 | 108 |
+| plain-l2 | 0 | 8,000 | 0.002 | 1,776,896 | 1.1659 | 121 |
+| plain-l4 | 0 | 8,000 | 0.0005 | 3,356,416 | 1.1657 | 199 |
+| plain-l4 | 0 | 8,000 | 0.001 | 3,356,416 | 1.1113 | 260 |
+| plain-l4 | 1 | 8,000 | 0.001 | 3,356,416 | 1.1146 | 218 |
+| plain-l4 | 2 | 8,000 | 0.001 | 3,356,416 | 1.1214 | 208 |
+| plain-l4 | 0 | 8,000 | 0.002 | 3,356,416 | 1.0984 | 199 |
+| plain-l6 | 0 | 8,000 | 0.0005 | 4,935,936 | 1.1317 | 291 |
+| plain-l6 | 0 | 8,000 | 0.001 | 4,935,936 | 1.1021 | 565 |
+| plain-l6 | 1 | 8,000 | 0.001 | 4,935,936 | 1.0864 | 304 |
+| plain-l6 | 2 | 8,000 | 0.001 | 4,935,936 | 1.0971 | 304 |
+| plain-l6 | 0 | 8,000 | 0.002 | 4,935,936 | 1.0743 | 291 |
+| plain-w128 | 0 | 8,000 | 0.0005 | 1,684,992 | 1.2433 | 198 |
+| plain-w128 | 0 | 8,000 | 0.001 | 1,684,992 | 1.1949 | 261 |
+| plain-w128 | 1 | 8,000 | 0.001 | 1,684,992 | 1.1867 | 207 |
+| plain-w128 | 2 | 8,000 | 0.001 | 1,684,992 | 1.2000 | 243 |
+| plain-w128 | 0 | 8,000 | 0.002 | 1,684,992 | 1.1674 | 198 |
+| plain-w160 | 0 | 8,000 | 0.0005 | 2,597,696 | 1.1878 | 272 |
+| plain-w160 | 0 | 8,000 | 0.001 | 2,597,696 | 1.1503 | 342 |
+| plain-w160 | 1 | 8,000 | 0.001 | 2,597,696 | 1.1540 | 282 |
+| plain-w160 | 2 | 8,000 | 0.001 | 2,597,696 | 1.1589 | 310 |
+| plain-w160 | 0 | 8,000 | 0.002 | 2,597,696 | 1.1185 | 272 |
+| plain-w192 | 0 | 8,000 | 0.0005 | 3,707,008 | 1.1527 | 303 |
+| plain-w192 | 0 | 8,000 | 0.001 | 3,707,008 | 1.1194 | 443 |
+| plain-w192 | 1 | 8,000 | 0.001 | 3,707,008 | 1.1191 | 321 |
+| plain-w192 | 2 | 8,000 | 0.001 | 3,707,008 | 1.1146 | 348 |
+| plain-w192 | 0 | 8,000 | 0.002 | 3,707,008 | 1.0837 | 304 |
+| plain-w224 | 0 | 8,000 | 0.0005 | 5,012,928 | 1.1208 | 353 |
+| plain-w224 | 0 | 8,000 | 0.001 | 5,012,928 | 1.0915 | 479 |
+| plain-w224 | 1 | 8,000 | 0.001 | 5,012,928 | 1.0979 | 373 |
+| plain-w224 | 2 | 8,000 | 0.001 | 5,012,928 | 1.1027 | 373 |
+| plain-w224 | 0 | 8,000 | 0.002 | 5,012,928 | 1.0648 | 353 |
+| plain-w96 | 0 | 8,000 | 0.0005 | 968,896 | 1.3421 | 185 |
+| plain-w96 | 0 | 8,000 | 0.001 | 968,896 | 1.2638 | 182 |
+| plain-w96 | 1 | 8,000 | 0.001 | 968,896 | 1.2569 | 181 |
+| plain-w96 | 2 | 8,000 | 0.001 | 968,896 | 1.2640 | 179 |
+| plain-w96 | 0 | 8,000 | 0.002 | 968,896 | 1.2306 | 201 |
 
 ## Reproducing
 
@@ -729,7 +846,6 @@ python -m weightbank.train <configuration> --seed <seed> --steps <steps> --rate 
 ```
 
 It writes `runs/<steps>/<configuration>-lr<learning rate>-s<seed>.json`.
-`python -m weightbank.sweep` trains every run of both experiments that `runs/` lacks (the
-first experiment, the short sweep, the long sweep, then the remaining seeds at each
-configuration's rate), and `python -m weightbank.report` rebuilds this file and the
-chart.
+A configuration's name is its cell's name in the ledger. `python -m weightbank.loop
+--gpu-hours <hours>` picks and trains the next cell, and `python -m weightbank.report`
+rebuilds this file and the chart.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -14,7 +15,7 @@ from torch import Tensor
 from torch.amp.grad_scaler import GradScaler
 
 from weightbank import data
-from weightbank.configs import CONFIGS
+from weightbank.configs import LEDGER, config
 from weightbank.model import CONTEXT, Picks, Transformer
 
 RUNS = Path("runs")
@@ -24,6 +25,8 @@ WARMUP = 200
 WEIGHT_DECAY = 0.1
 LOG_EVERY = 500
 LOG_WINDOWS = 8 * EVAL_BATCH
+SETTLE_PART = 4
+GPU_MIB = "WEIGHTBANK_GPU_MIB"
 
 
 @dataclass
@@ -71,7 +74,7 @@ class Plan:
 
     @property
     def path(self) -> Path:
-        return RUNS / str(self.steps) / f"{self.config}-lr{self.peak_rate!r}-s{self.seed}.json"
+        return LEDGER.run_path(RUNS, LEDGER.parse(self.config, self.steps), self.peak_rate, self.seed)
 
     @property
     def command(self) -> list[str]:
@@ -132,7 +135,7 @@ def evaluate(
     tokens = 0
     feed_forward = PickTally()
     attention = PickTally()
-    for start in range(0, len(inputs) if windows is None else windows, EVAL_BATCH):
+    for start in range(0, len(inputs) if windows is None else min(windows, len(inputs)), EVAL_BATCH):
         batch = inputs[start : start + EVAL_BATCH]
         with torch.autocast(batch.device.type, dtype=torch.float16):
             logits, trace = model(batch)
@@ -146,15 +149,28 @@ def evaluate(
     return Evaluation(total / tokens, feed_forward.stats(), attention.stats())
 
 
+def settle(model: Transformer, text: Tensor) -> None:
+    banks = [bank for bank in (model.feed_forward, model.attention) if bank.settles()]
+    if not banks:
+        return
+    seen = evaluate(model, text, windows=LOG_WINDOWS)
+    for bank in banks:
+        stats = seen.feed_forward if bank is model.feed_forward else seen.attention
+        assert stats is not None
+        bank.settle([max(range(len(row)), key=row.__getitem__) for row in stats.counts])
+
+
 def train(plan: Plan) -> Run:
     name, seed, steps = plan.config, plan.seed, plan.steps
     device = torch.device("cuda")
-    free, _ = torch.cuda.mem_get_info()
+    free, total = torch.cuda.mem_get_info()
+    if GPU_MIB in os.environ:
+        torch.cuda.set_per_process_memory_fraction(int(os.environ[GPU_MIB]) * 2**20 / total)
     print(f"{name} seed {seed}: {free / 2**20:.0f} MiB of GPU memory free", flush=True)
     corpus = data.load(device)
     torch.manual_seed(seed)
     generator = torch.Generator(device).manual_seed(seed)
-    model = Transformer(CONFIGS[name]).to(device)
+    model = Transformer(config(name)).to(device)
     stored = model.stored_weights()
     print(f"stored weights {stored}", flush=True)
     matrices = [parameter for parameter in model.parameters() if parameter.dim() >= 2]
@@ -172,6 +188,8 @@ def train(plan: Plan) -> Run:
     seconds = 0.0
     started = time.monotonic()
     for step in range(steps):
+        if step == steps // SETTLE_PART:
+            settle(model, corpus.train[: LOG_WINDOWS * CONTEXT + 1])
         for group in optimizer.param_groups:
             group["lr"] = rate(step, steps, plan.peak_rate)
         inputs, targets = data.sample(corpus.train, BATCH, CONTEXT, generator)
@@ -222,12 +240,13 @@ def train(plan: Plan) -> Run:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train one configuration at one seed.")
-    parser.add_argument("config", choices=sorted(CONFIGS))
+    parser.add_argument("config", help="a cell's name, as the ledger's axes spell it")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--steps", type=int, required=True)
     parser.add_argument("--rate", type=float, required=True, help="peak learning rate")
     arguments = parser.parse_args()
     plan = Plan(arguments.config, arguments.seed, arguments.steps, arguments.rate)
+    config(plan.config)
     run = train(plan)
     plan.path.parent.mkdir(parents=True, exist_ok=True)
     partial = plan.path.with_suffix(".partial")

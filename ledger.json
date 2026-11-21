@@ -1,0 +1,1297 @@
+{
+ "default_name": "full",
+ "axes": [
+  {
+   "name": "shared",
+   "meaning": "which weights the modules draw from a bank instead of owning: none, feed-forward, attention or both",
+   "default": "none",
+   "values": [["none", "own"], ["ff", "ff"], ["attn", "attn"], ["both", "both"]]
+  },
+  {
+   "name": "pick",
+   "meaning": "how a module gets its chunk: fixed is module i to chunk i mod N; routed is a per-token learned pick sampled with noise; argmax the same without noise; keys scores a learned key per chunk; frozen is routed until a quarter of training, then each module keeps its most common pick; stopped is routed with the router's weights held still after that quarter",
+   "default": "fixed",
+   "values": [
+    ["fixed", "fixed"],
+    ["routed", "routed"],
+    ["argmax", "routed-argmax"],
+    ["keys", "routed-keys"],
+    ["frozen", "frozen-picks"],
+    ["stopped", "stopped-router"]
+   ]
+  },
+  {
+   "name": "chunks",
+   "meaning": "bank size: chunks stored per shared kind",
+   "default": 4,
+   "values": [[1, "c1"], [2, "c2"], [4, "c4"], [8, "c8"]]
+  },
+  {
+   "name": "rank",
+   "meaning": "rank of a low-rank correction each module adds to the shared chunk it uses; 0 is none",
+   "default": 0,
+   "values": [[0, "r0"], [24, "r24"]]
+  },
+  {
+   "name": "modules",
+   "meaning": "compute modules (layers)",
+   "default": 8,
+   "values": [[1, "plain-l1"], [2, "plain-l2"], [4, "plain-l4"], [6, "plain-l6"], [8, "plain-l8"]]
+  },
+  {
+   "name": "width",
+   "meaning": "hidden width",
+   "default": 256,
+   "values": [
+    [96, "plain-w96"],
+    [128, "plain-w128"],
+    [160, "plain-w160"],
+    [192, "plain-w192"],
+    [224, "plain-w224"],
+    [256, "plain-w256"]
+   ]
+  },
+  {
+   "name": "steps",
+   "meaning": "training budget in optimizer steps; the tag is the directory under runs/",
+   "default": 8000,
+   "values": [[8000, "8000"], [32000, "32000"], [128000, "128000"]]
+  }
+ ],
+ "hypotheses": [
+  {
+   "id": "low-rank-correction",
+   "priority": 1,
+   "status": "open",
+   "statement": "A shared bank plus a low-rank correction per module beats plain sharing at equal stored weights: one chunk per bank with a rank-24 correction in each of the 8 modules reaches a lower loss than the fixed map with two chunks, which stores 2,304 more weights (0.1%).",
+   "settle": [
+    {
+     "lower": {"shared": "both", "chunks": 1, "rank": 24, "steps": 32000},
+     "higher": {"shared": "both", "chunks": 2, "steps": 32000}
+    }
+   ]
+  },
+  {
+   "id": "picking-lock-in",
+   "priority": 3,
+   "status": "open",
+   "statement": "A per-input pick loses to the fixed map because routers lock in early, near-random picks: with each module frozen to its router's most common pick after a quarter of training, the model still loses to the fixed map of module i to chunk i mod N.",
+   "settle": [
+    {
+     "lower": {"shared": "both", "steps": 32000},
+     "higher": {"shared": "both", "pick": "frozen", "steps": 32000}
+    }
+   ]
+  },
+  {
+   "id": "picking-chase",
+   "priority": 3,
+   "status": "open",
+   "statement": "A per-input pick loses because chunks and router chase each other: holding the router's weights still after a quarter of training beats letting it learn throughout.",
+   "settle": [
+    {
+     "lower": {"shared": "both", "pick": "stopped", "steps": 32000},
+     "higher": {"shared": "both", "pick": "routed", "steps": 32000}
+    }
+   ]
+  },
+  {
+   "id": "picking-worse-function",
+   "priority": 3,
+   "status": "open",
+   "statement": "A per-input pick loses because mixing chunks token by token is a worse function than one chunk per module, even under a router that no longer moves: frozen picks beat a stopped router.",
+   "settle": [
+    {
+     "lower": {"shared": "both", "pick": "frozen", "steps": 32000},
+     "higher": {"shared": "both", "pick": "stopped", "steps": 32000}
+    }
+   ]
+  },
+  {
+   "id": "picking-too-few-steps",
+   "priority": 4,
+   "status": "open",
+   "statement": "A per-input pick loses only because training is short: at 128,000 steps the routed model reaches a lower loss than the fixed map.",
+   "settle": [
+    {
+     "lower": {"shared": "both", "pick": "routed", "steps": 128000},
+     "higher": {"shared": "both", "steps": 128000}
+    }
+   ]
+  },
+  {
+   "id": "compress-a-trained-model",
+   "priority": 5,
+   "status": "open",
+   "statement": "A trained unshared model can be compressed into a shared bank and keep a lower loss than the same shared model trained from scratch. No cell expresses this yet: it needs an axis for how training starts.",
+   "settle": []
+  },
+  {
+   "id": "reuse-beats-fewer-modules",
+   "priority": 9,
+   "status": "supported",
+   "statement": "Eight modules reusing N chunks beat the plain model of N modules, which stores the same chunks and applies each once.",
+   "settle": [
+    {
+     "lower": {"shared": "both", "chunks": 1, "steps": 32000},
+     "higher": {"modules": 1, "steps": 32000},
+     "differences": [-0.258, -0.2593, -0.2622]
+    },
+    {
+     "lower": {"shared": "both", "chunks": 2, "steps": 32000},
+     "higher": {"modules": 2, "steps": 32000},
+     "differences": [-0.0634, -0.0611, -0.0555]
+    },
+    {
+     "lower": {"shared": "both", "steps": 32000},
+     "higher": {"modules": 4, "steps": 32000},
+     "differences": [-0.0195, -0.0198, -0.0164]
+    }
+   ]
+  },
+  {
+   "id": "routing-beats-the-fixed-map",
+   "priority": 9,
+   "status": "refuted",
+   "statement": "A per-input pick over the two banks beats the fixed map over the same banks.",
+   "settle": [
+    {
+     "lower": {"shared": "both", "pick": "routed", "steps": 32000},
+     "higher": {"shared": "both", "steps": 32000},
+     "differences": [0.0194, 0.02, 0.0167]
+    },
+    {
+     "lower": {"shared": "both", "pick": "argmax", "steps": 32000},
+     "higher": {"shared": "both", "steps": 32000},
+     "differences": [0.0361, 0.031, 0.0304]
+    },
+    {
+     "lower": {"shared": "both", "pick": "keys", "steps": 32000},
+     "higher": {"shared": "both", "steps": 32000},
+     "differences": [0.0224, 0.0168, 0.0167]
+    }
+   ]
+  }
+ ],
+ "rounds": [],
+ "cells": [
+  {
+   "cell": {"shared": "attn", "pick": "routed", "steps": 32000},
+   "stored_weights": 5480004,
+   "rate": 0.002,
+   "loss": 1.0137,
+   "seed_sd": 0.0032,
+   "runs": [
+    {
+     "file": "runs/32000/attn-routed-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.0163,
+     "seconds": 5024
+    },
+    {
+     "file": "runs/32000/attn-routed-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.0117,
+     "seconds": 3851
+    },
+    {
+     "file": "runs/32000/attn-routed-lr0.002-s1.json",
+     "rate": 0.002,
+     "seed": 1,
+     "loss": 1.0119,
+     "seconds": 5449
+    },
+    {
+     "file": "runs/32000/attn-routed-lr0.002-s2.json",
+     "rate": 0.002,
+     "seed": 2,
+     "loss": 1.0174,
+     "seconds": 3644
+    }
+   ]
+  },
+  {
+   "cell": {"shared": "both", "chunks": 1, "steps": 32000},
+   "stored_weights": 994304,
+   "rate": 0.002,
+   "loss": 1.1177,
+   "seed_sd": 0.0008,
+   "runs": [
+    {"file": "runs/32000/both-c1-lr0.001-s0.json", "rate": 0.001, "seed": 0, "loss": 1.1267, "seconds": 1604},
+    {"file": "runs/32000/both-c1-lr0.002-s0.json", "rate": 0.002, "seed": 0, "loss": 1.1184, "seconds": 1725},
+    {"file": "runs/32000/both-c1-lr0.002-s1.json", "rate": 0.002, "seed": 1, "loss": 1.1178, "seconds": 1622},
+    {"file": "runs/32000/both-c1-lr0.002-s2.json", "rate": 0.002, "seed": 2, "loss": 1.1168, "seconds": 1693},
+    {"file": "runs/32000/both-c1-lr0.004-s0.json", "rate": 0.004, "seed": 0, "loss": 1.1207, "seconds": 1754}
+   ]
+  },
+  {
+   "cell": {"shared": "both", "chunks": 2, "steps": 32000},
+   "stored_weights": 1783040,
+   "rate": 0.001,
+   "loss": 1.0583,
+   "seed_sd": 0.0039,
+   "runs": [
+    {
+     "file": "runs/32000/both-c2-lr0.0005-s0.json",
+     "rate": 0.0005,
+     "seed": 0,
+     "loss": 1.0752,
+     "seconds": 1765
+    },
+    {"file": "runs/32000/both-c2-lr0.001-s0.json", "rate": 0.001, "seed": 0, "loss": 1.0548, "seconds": 1792},
+    {"file": "runs/32000/both-c2-lr0.001-s1.json", "rate": 0.001, "seed": 1, "loss": 1.0577, "seconds": 1731},
+    {"file": "runs/32000/both-c2-lr0.001-s2.json", "rate": 0.001, "seed": 2, "loss": 1.0625, "seconds": 2168},
+    {"file": "runs/32000/both-c2-lr0.002-s0.json", "rate": 0.002, "seed": 0, "loss": 1.0553, "seconds": 1778}
+   ]
+  },
+  {
+   "cell": {"shared": "both", "chunks": 8, "steps": 32000},
+   "stored_weights": 6515456,
+   "rate": 0.002,
+   "loss": 0.9841,
+   "seed_sd": 0.0008,
+   "runs": [
+    {"file": "runs/32000/both-c8-lr0.002-s0.json", "rate": 0.002, "seed": 0, "loss": 0.9845, "seconds": 2059},
+    {"file": "runs/32000/both-c8-lr0.002-s1.json", "rate": 0.002, "seed": 1, "loss": 0.9847, "seconds": 2103},
+    {"file": "runs/32000/both-c8-lr0.002-s2.json", "rate": 0.002, "seed": 2, "loss": 0.9832, "seconds": 2487}
+   ]
+  },
+  {
+   "cell": {"shared": "both", "steps": 32000},
+   "stored_weights": 3360512,
+   "rate": 0.002,
+   "loss": 1.0134,
+   "seed_sd": 0.0012,
+   "runs": [
+    {"file": "runs/32000/both-lr0.001-s0.json", "rate": 0.001, "seed": 0, "loss": 1.0167, "seconds": 1868},
+    {"file": "runs/32000/both-lr0.002-s0.json", "rate": 0.002, "seed": 0, "loss": 1.0122, "seconds": 1852},
+    {"file": "runs/32000/both-lr0.002-s1.json", "rate": 0.002, "seed": 1, "loss": 1.0136, "seconds": 1743},
+    {"file": "runs/32000/both-lr0.002-s2.json", "rate": 0.002, "seed": 2, "loss": 1.0145, "seconds": 2197}
+   ]
+  },
+  {
+   "cell": {"shared": "both", "pick": "argmax", "steps": 32000},
+   "stored_weights": 3394952,
+   "rate": 0.002,
+   "loss": 1.0459,
+   "seed_sd": 0.0021,
+   "runs": [
+    {
+     "file": "runs/32000/both-routed-argmax-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.0593,
+     "seconds": 5772
+    },
+    {
+     "file": "runs/32000/both-routed-argmax-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.0483,
+     "seconds": 5771
+    },
+    {
+     "file": "runs/32000/both-routed-argmax-lr0.002-s1.json",
+     "rate": 0.002,
+     "seed": 1,
+     "loss": 1.0446,
+     "seconds": 5803
+    },
+    {
+     "file": "runs/32000/both-routed-argmax-lr0.002-s2.json",
+     "rate": 0.002,
+     "seed": 2,
+     "loss": 1.0449,
+     "seconds": 5827
+    },
+    {
+     "file": "runs/32000/both-routed-argmax-lr0.004-s0.json",
+     "rate": 0.004,
+     "seed": 0,
+     "loss": 1.219,
+     "seconds": 5767
+    }
+   ]
+  },
+  {
+   "cell": {"shared": "both", "pick": "keys", "steps": 32000},
+   "stored_weights": 3398016,
+   "rate": 0.002,
+   "loss": 1.0321,
+   "seed_sd": 0.0022,
+   "runs": [
+    {
+     "file": "runs/32000/both-routed-keys-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.0477,
+     "seconds": 5745
+    },
+    {
+     "file": "runs/32000/both-routed-keys-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.0346,
+     "seconds": 5717
+    },
+    {
+     "file": "runs/32000/both-routed-keys-lr0.002-s1.json",
+     "rate": 0.002,
+     "seed": 1,
+     "loss": 1.0304,
+     "seconds": 10529
+    },
+    {
+     "file": "runs/32000/both-routed-keys-lr0.002-s2.json",
+     "rate": 0.002,
+     "seed": 2,
+     "loss": 1.0312,
+     "seconds": 5773
+    },
+    {
+     "file": "runs/32000/both-routed-keys-lr0.004-s0.json",
+     "rate": 0.004,
+     "seed": 0,
+     "loss": 1.0362,
+     "seconds": 5720
+    }
+   ]
+  },
+  {
+   "cell": {"shared": "both", "pick": "routed", "steps": 32000},
+   "stored_weights": 3394952,
+   "rate": 0.002,
+   "loss": 1.0321,
+   "seed_sd": 0.0013,
+   "runs": [
+    {
+     "file": "runs/32000/both-routed-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.0394,
+     "seconds": 7041
+    },
+    {
+     "file": "runs/32000/both-routed-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.0316,
+     "seconds": 5788
+    },
+    {
+     "file": "runs/32000/both-routed-lr0.002-s1.json",
+     "rate": 0.002,
+     "seed": 1,
+     "loss": 1.0336,
+     "seconds": 5865
+    },
+    {
+     "file": "runs/32000/both-routed-lr0.002-s2.json",
+     "rate": 0.002,
+     "seed": 2,
+     "loss": 1.0312,
+     "seconds": 5859
+    },
+    {
+     "file": "runs/32000/both-routed-lr0.004-s0.json",
+     "rate": 0.004,
+     "seed": 0,
+     "loss": 1.0366,
+     "seconds": 6741
+    }
+   ]
+  },
+  {
+   "cell": {"shared": "ff", "pick": "routed", "steps": 32000},
+   "stored_weights": 4430404,
+   "rate": 0.002,
+   "loss": 1.009,
+   "seed_sd": 0.0014,
+   "runs": [
+    {
+     "file": "runs/32000/ff-routed-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.0123,
+     "seconds": 3709
+    },
+    {
+     "file": "runs/32000/ff-routed-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.0098,
+     "seconds": 8366
+    },
+    {
+     "file": "runs/32000/ff-routed-lr0.002-s1.json",
+     "rate": 0.002,
+     "seed": 1,
+     "loss": 1.0099,
+     "seconds": 3872
+    },
+    {
+     "file": "runs/32000/ff-routed-lr0.002-s2.json",
+     "rate": 0.002,
+     "seed": 2,
+     "loss": 1.0074,
+     "seconds": 3728
+    }
+   ]
+  },
+  {
+   "cell": {"steps": 32000},
+   "stored_weights": 6515456,
+   "rate": 0.002,
+   "loss": 0.9833,
+   "seed_sd": 0.0012,
+   "runs": [
+    {"file": "runs/32000/full-lr0.001-s0.json", "rate": 0.001, "seed": 0, "loss": 1.0003, "seconds": 2008},
+    {"file": "runs/32000/full-lr0.002-s0.json", "rate": 0.002, "seed": 0, "loss": 0.9819, "seconds": 2089},
+    {"file": "runs/32000/full-lr0.002-s1.json", "rate": 0.002, "seed": 1, "loss": 0.9843, "seconds": 1569},
+    {"file": "runs/32000/full-lr0.002-s2.json", "rate": 0.002, "seed": 2, "loss": 0.9837, "seconds": 1509},
+    {"file": "runs/32000/full-lr0.004-s0.json", "rate": 0.004, "seed": 0, "loss": 0.984, "seconds": 1865}
+   ]
+  },
+  {
+   "cell": {"modules": 1, "steps": 32000},
+   "stored_weights": 987136,
+   "rate": 0.002,
+   "loss": 1.3775,
+   "seed_sd": 0.0013,
+   "runs": [
+    {"file": "runs/32000/plain-l1-lr0.001-s0.json", "rate": 0.001, "seed": 0, "loss": 1.3788, "seconds": 254},
+    {"file": "runs/32000/plain-l1-lr0.002-s0.json", "rate": 0.002, "seed": 0, "loss": 1.3764, "seconds": 252},
+    {"file": "runs/32000/plain-l1-lr0.002-s1.json", "rate": 0.002, "seed": 1, "loss": 1.3771, "seconds": 302},
+    {"file": "runs/32000/plain-l1-lr0.002-s2.json", "rate": 0.002, "seed": 2, "loss": 1.379, "seconds": 252}
+   ]
+  },
+  {
+   "cell": {"modules": 2, "steps": 32000},
+   "stored_weights": 1776896,
+   "rate": 0.002,
+   "loss": 1.1183,
+   "seed_sd": 0.0004,
+   "runs": [
+    {"file": "runs/32000/plain-l2-lr0.001-s0.json", "rate": 0.001, "seed": 0, "loss": 1.1195, "seconds": 439},
+    {"file": "runs/32000/plain-l2-lr0.002-s0.json", "rate": 0.002, "seed": 0, "loss": 1.1182, "seconds": 538},
+    {"file": "runs/32000/plain-l2-lr0.002-s1.json", "rate": 0.002, "seed": 1, "loss": 1.1188, "seconds": 454},
+    {"file": "runs/32000/plain-l2-lr0.002-s2.json", "rate": 0.002, "seed": 2, "loss": 1.118, "seconds": 428}
+   ]
+  },
+  {
+   "cell": {"modules": 4, "steps": 32000},
+   "stored_weights": 3356416,
+   "rate": 0.002,
+   "loss": 1.032,
+   "seed_sd": 0.0013,
+   "runs": [
+    {"file": "runs/32000/plain-l4-lr0.001-s0.json", "rate": 0.001, "seed": 0, "loss": 1.0388, "seconds": 901},
+    {"file": "runs/32000/plain-l4-lr0.002-s0.json", "rate": 0.002, "seed": 0, "loss": 1.0317, "seconds": 822},
+    {"file": "runs/32000/plain-l4-lr0.002-s1.json", "rate": 0.002, "seed": 1, "loss": 1.0334, "seconds": 801},
+    {"file": "runs/32000/plain-l4-lr0.002-s2.json", "rate": 0.002, "seed": 2, "loss": 1.0309, "seconds": 784},
+    {"file": "runs/32000/plain-l4-lr0.004-s0.json", "rate": 0.004, "seed": 0, "loss": 1.0372, "seconds": 867}
+   ]
+  },
+  {
+   "cell": {"modules": 6, "steps": 32000},
+   "stored_weights": 4935936,
+   "rate": 0.002,
+   "loss": 1.0019,
+   "seed_sd": 0.0022,
+   "runs": [
+    {
+     "file": "runs/32000/plain-l6-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.0215,
+     "seconds": 1150
+    },
+    {
+     "file": "runs/32000/plain-l6-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.0043,
+     "seconds": 1146
+    },
+    {
+     "file": "runs/32000/plain-l6-lr0.002-s1.json",
+     "rate": 0.002,
+     "seed": 1,
+     "loss": 1.0002,
+     "seconds": 1161
+    },
+    {
+     "file": "runs/32000/plain-l6-lr0.002-s2.json",
+     "rate": 0.002,
+     "seed": 2,
+     "loss": 1.0011,
+     "seconds": 1251
+    },
+    {
+     "file": "runs/32000/plain-l6-lr0.004-s0.json",
+     "rate": 0.004,
+     "seed": 0,
+     "loss": 1.0072,
+     "seconds": 1151
+    }
+   ]
+  },
+  {
+   "cell": {"width": 128, "steps": 32000},
+   "stored_weights": 1684992,
+   "rate": 0.004,
+   "loss": 1.0779,
+   "seed_sd": 0.006,
+   "runs": [
+    {
+     "file": "runs/32000/plain-w128-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.11,
+     "seconds": 1124
+    },
+    {
+     "file": "runs/32000/plain-w128-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.1017,
+     "seconds": 1056
+    },
+    {
+     "file": "runs/32000/plain-w128-lr0.004-s0.json",
+     "rate": 0.004,
+     "seed": 0,
+     "loss": 1.0838,
+     "seconds": 837
+    },
+    {
+     "file": "runs/32000/plain-w128-lr0.004-s1.json",
+     "rate": 0.004,
+     "seed": 1,
+     "loss": 1.078,
+     "seconds": 854
+    },
+    {
+     "file": "runs/32000/plain-w128-lr0.004-s2.json",
+     "rate": 0.004,
+     "seed": 2,
+     "loss": 1.0719,
+     "seconds": 815
+    },
+    {
+     "file": "runs/32000/plain-w128-lr0.008-s0.json",
+     "rate": 0.008,
+     "seed": 0,
+     "loss": 1.0862,
+     "seconds": 1090
+    }
+   ]
+  },
+  {
+   "cell": {"width": 160, "steps": 32000},
+   "stored_weights": 2597696,
+   "rate": 0.004,
+   "loss": 1.0413,
+   "seed_sd": 0.0017,
+   "runs": [
+    {
+     "file": "runs/32000/plain-w160-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.0679,
+     "seconds": 1528
+    },
+    {
+     "file": "runs/32000/plain-w160-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.0484,
+     "seconds": 1298
+    },
+    {
+     "file": "runs/32000/plain-w160-lr0.004-s0.json",
+     "rate": 0.004,
+     "seed": 0,
+     "loss": 1.0399,
+     "seconds": 1315
+    },
+    {
+     "file": "runs/32000/plain-w160-lr0.004-s1.json",
+     "rate": 0.004,
+     "seed": 1,
+     "loss": 1.0432,
+     "seconds": 1145
+    },
+    {
+     "file": "runs/32000/plain-w160-lr0.004-s2.json",
+     "rate": 0.004,
+     "seed": 2,
+     "loss": 1.0409,
+     "seconds": 1729
+    },
+    {
+     "file": "runs/32000/plain-w160-lr0.008-s0.json",
+     "rate": 0.008,
+     "seed": 0,
+     "loss": 1.0499,
+     "seconds": 1303
+    }
+   ]
+  },
+  {
+   "cell": {"width": 192, "steps": 32000},
+   "stored_weights": 3707008,
+   "rate": 0.002,
+   "loss": 1.0138,
+   "seed_sd": 0.0014,
+   "runs": [
+    {
+     "file": "runs/32000/plain-w192-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.0406,
+     "seconds": 1282
+    },
+    {
+     "file": "runs/32000/plain-w192-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.0125,
+     "seconds": 1431
+    },
+    {
+     "file": "runs/32000/plain-w192-lr0.002-s1.json",
+     "rate": 0.002,
+     "seed": 1,
+     "loss": 1.0152,
+     "seconds": 1223
+    },
+    {
+     "file": "runs/32000/plain-w192-lr0.002-s2.json",
+     "rate": 0.002,
+     "seed": 2,
+     "loss": 1.0138,
+     "seconds": 1679
+    },
+    {
+     "file": "runs/32000/plain-w192-lr0.004-s0.json",
+     "rate": 0.004,
+     "seed": 0,
+     "loss": 1.0145,
+     "seconds": 1326
+    }
+   ]
+  },
+  {
+   "cell": {"width": 224, "steps": 32000},
+   "stored_weights": 5012928,
+   "rate": 0.002,
+   "loss": 0.998,
+   "seed_sd": 0.0038,
+   "runs": [
+    {
+     "file": "runs/32000/plain-w224-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.0124,
+     "seconds": 1440
+    },
+    {
+     "file": "runs/32000/plain-w224-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 0.9946,
+     "seconds": 1415
+    },
+    {
+     "file": "runs/32000/plain-w224-lr0.002-s1.json",
+     "rate": 0.002,
+     "seed": 1,
+     "loss": 1.0021,
+     "seconds": 1458
+    },
+    {
+     "file": "runs/32000/plain-w224-lr0.002-s2.json",
+     "rate": 0.002,
+     "seed": 2,
+     "loss": 0.9973,
+     "seconds": 1431
+    },
+    {
+     "file": "runs/32000/plain-w224-lr0.004-s0.json",
+     "rate": 0.004,
+     "seed": 0,
+     "loss": 0.9991,
+     "seconds": 1414
+    }
+   ]
+  },
+  {
+   "cell": {"width": 96, "steps": 32000},
+   "stored_weights": 968896,
+   "rate": 0.002,
+   "loss": 1.1598,
+   "seed_sd": 0.001,
+   "runs": [
+    {
+     "file": "runs/32000/plain-w96-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.1649,
+     "seconds": 919
+    },
+    {
+     "file": "runs/32000/plain-w96-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.1602,
+     "seconds": 767
+    },
+    {
+     "file": "runs/32000/plain-w96-lr0.002-s1.json",
+     "rate": 0.002,
+     "seed": 1,
+     "loss": 1.1587,
+     "seconds": 771
+    },
+    {
+     "file": "runs/32000/plain-w96-lr0.002-s2.json",
+     "rate": 0.002,
+     "seed": 2,
+     "loss": 1.1606,
+     "seconds": 688
+    }
+   ]
+  },
+  {
+   "cell": {"shared": "attn", "pick": "routed", "steps": 8000},
+   "stored_weights": 5480004,
+   "rate": 0.001,
+   "loss": 1.1146,
+   "seed_sd": 0.0024,
+   "runs": [
+    {
+     "file": "runs/8000/attn-routed-lr0.0005-s0.json",
+     "rate": 0.0005,
+     "seed": 0,
+     "loss": 1.1429,
+     "seconds": 910
+    },
+    {
+     "file": "runs/8000/attn-routed-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.1166,
+     "seconds": 1050
+    },
+    {
+     "file": "runs/8000/attn-routed-lr0.001-s1.json",
+     "rate": 0.001,
+     "seed": 1,
+     "loss": 1.1119,
+     "seconds": 1011
+    },
+    {
+     "file": "runs/8000/attn-routed-lr0.001-s2.json",
+     "rate": 0.001,
+     "seed": 2,
+     "loss": 1.1152,
+     "seconds": 919
+    },
+    {
+     "file": "runs/8000/attn-routed-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.0961,
+     "seconds": 912
+    }
+   ]
+  },
+  {
+   "cell": {"shared": "both", "chunks": 1, "steps": 8000},
+   "stored_weights": 994304,
+   "rate": 0.001,
+   "loss": 1.2054,
+   "seed_sd": 0.0056,
+   "runs": [
+    {"file": "runs/8000/both-c1-lr0.0005-s0.json", "rate": 0.0005, "seed": 0, "loss": 1.2404, "seconds": 469},
+    {"file": "runs/8000/both-c1-lr0.001-s0.json", "rate": 0.001, "seed": 0, "loss": 1.2107, "seconds": 416},
+    {"file": "runs/8000/both-c1-lr0.001-s1.json", "rate": 0.001, "seed": 1, "loss": 1.1996, "seconds": 407},
+    {"file": "runs/8000/both-c1-lr0.001-s2.json", "rate": 0.001, "seed": 2, "loss": 1.2059, "seconds": 410},
+    {"file": "runs/8000/both-c1-lr0.002-s0.json", "rate": 0.002, "seed": 0, "loss": 1.1797, "seconds": 457}
+   ]
+  },
+  {
+   "cell": {"shared": "both", "chunks": 2, "steps": 8000},
+   "stored_weights": 1783040,
+   "rate": 0.001,
+   "loss": 1.1384,
+   "seed_sd": 0.0073,
+   "runs": [
+    {"file": "runs/8000/both-c2-lr0.0005-s0.json", "rate": 0.0005, "seed": 0, "loss": 1.1882, "seconds": 429},
+    {"file": "runs/8000/both-c2-lr0.001-s0.json", "rate": 0.001, "seed": 0, "loss": 1.1313, "seconds": 430},
+    {"file": "runs/8000/both-c2-lr0.001-s1.json", "rate": 0.001, "seed": 1, "loss": 1.1379, "seconds": 418},
+    {"file": "runs/8000/both-c2-lr0.001-s2.json", "rate": 0.001, "seed": 2, "loss": 1.1459, "seconds": 421},
+    {"file": "runs/8000/both-c2-lr0.002-s0.json", "rate": 0.002, "seed": 0, "loss": 1.1195, "seconds": 436}
+   ]
+  },
+  {
+   "cell": {"shared": "both", "chunks": 8, "steps": 8000},
+   "stored_weights": 6515456,
+   "rate": 0.001,
+   "loss": 1.0768,
+   "seed_sd": 0.0023,
+   "runs": [
+    {"file": "runs/8000/both-c8-lr0.001-s0.json", "rate": 0.001, "seed": 0, "loss": 1.0788, "seconds": 533},
+    {"file": "runs/8000/both-c8-lr0.001-s1.json", "rate": 0.001, "seed": 1, "loss": 1.0743, "seconds": 550},
+    {"file": "runs/8000/both-c8-lr0.001-s2.json", "rate": 0.001, "seed": 2, "loss": 1.0773, "seconds": 489}
+   ]
+  },
+  {
+   "cell": {"shared": "both", "steps": 8000},
+   "stored_weights": 3360512,
+   "rate": 0.001,
+   "loss": 1.1004,
+   "seed_sd": 0.0049,
+   "runs": [
+    {"file": "runs/8000/both-lr0.0005-s0.json", "rate": 0.0005, "seed": 0, "loss": 1.1466, "seconds": 446},
+    {"file": "runs/8000/both-lr0.001-s0.json", "rate": 0.001, "seed": 0, "loss": 1.0976, "seconds": 494},
+    {"file": "runs/8000/both-lr0.001-s1.json", "rate": 0.001, "seed": 1, "loss": 1.0975, "seconds": 501},
+    {"file": "runs/8000/both-lr0.001-s2.json", "rate": 0.001, "seed": 2, "loss": 1.1061, "seconds": 504},
+    {"file": "runs/8000/both-lr0.002-s0.json", "rate": 0.002, "seed": 0, "loss": 1.0802, "seconds": 662}
+   ]
+  },
+  {
+   "cell": {"shared": "both", "pick": "argmax", "steps": 8000},
+   "stored_weights": 3394952,
+   "rate": 0.001,
+   "loss": 1.1581,
+   "seed_sd": 0.0024,
+   "runs": [
+    {
+     "file": "runs/8000/both-routed-argmax-lr0.0005-s0.json",
+     "rate": 0.0005,
+     "seed": 0,
+     "loss": 1.2087,
+     "seconds": 1622
+    },
+    {
+     "file": "runs/8000/both-routed-argmax-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.1594,
+     "seconds": 1440
+    },
+    {
+     "file": "runs/8000/both-routed-argmax-lr0.001-s1.json",
+     "rate": 0.001,
+     "seed": 1,
+     "loss": 1.1553,
+     "seconds": 1446
+    },
+    {
+     "file": "runs/8000/both-routed-argmax-lr0.001-s2.json",
+     "rate": 0.001,
+     "seed": 2,
+     "loss": 1.1596,
+     "seconds": 1442
+    },
+    {
+     "file": "runs/8000/both-routed-argmax-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.136,
+     "seconds": 1526
+    }
+   ]
+  },
+  {
+   "cell": {"shared": "both", "pick": "keys", "steps": 8000},
+   "stored_weights": 3398016,
+   "rate": 0.001,
+   "loss": 1.1506,
+   "seed_sd": 0.0088,
+   "runs": [
+    {
+     "file": "runs/8000/both-routed-keys-lr0.0005-s0.json",
+     "rate": 0.0005,
+     "seed": 0,
+     "loss": 1.1991,
+     "seconds": 1545
+    },
+    {
+     "file": "runs/8000/both-routed-keys-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.1602,
+     "seconds": 1438
+    },
+    {
+     "file": "runs/8000/both-routed-keys-lr0.001-s1.json",
+     "rate": 0.001,
+     "seed": 1,
+     "loss": 1.1429,
+     "seconds": 1439
+    },
+    {
+     "file": "runs/8000/both-routed-keys-lr0.001-s2.json",
+     "rate": 0.001,
+     "seed": 2,
+     "loss": 1.1488,
+     "seconds": 1448
+    },
+    {
+     "file": "runs/8000/both-routed-keys-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.1253,
+     "seconds": 1492
+    }
+   ]
+  },
+  {
+   "cell": {"shared": "both", "pick": "routed", "steps": 8000},
+   "stored_weights": 3394952,
+   "rate": 0.001,
+   "loss": 1.1452,
+   "seed_sd": 0.0042,
+   "runs": [
+    {
+     "file": "runs/8000/both-routed-lr0.0005-s0.json",
+     "rate": 0.0005,
+     "seed": 0,
+     "loss": 1.1906,
+     "seconds": 1450
+    },
+    {
+     "file": "runs/8000/both-routed-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.1455,
+     "seconds": 1602
+    },
+    {
+     "file": "runs/8000/both-routed-lr0.001-s1.json",
+     "rate": 0.001,
+     "seed": 1,
+     "loss": 1.1492,
+     "seconds": 1586
+    },
+    {
+     "file": "runs/8000/both-routed-lr0.001-s2.json",
+     "rate": 0.001,
+     "seed": 2,
+     "loss": 1.1409,
+     "seconds": 1454
+    },
+    {
+     "file": "runs/8000/both-routed-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.1208,
+     "seconds": 1468
+    }
+   ]
+  },
+  {
+   "cell": {"shared": "ff", "pick": "routed", "steps": 8000},
+   "stored_weights": 4430404,
+   "rate": 0.001,
+   "loss": 1.0977,
+   "seed_sd": 0.0048,
+   "runs": [
+    {
+     "file": "runs/8000/ff-routed-lr0.0005-s0.json",
+     "rate": 0.0005,
+     "seed": 0,
+     "loss": 1.146,
+     "seconds": 962
+    },
+    {
+     "file": "runs/8000/ff-routed-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.1011,
+     "seconds": 2010
+    },
+    {"file": "runs/8000/ff-routed-lr0.001-s1.json", "rate": 0.001, "seed": 1, "loss": 1.0998, "seconds": 964},
+    {"file": "runs/8000/ff-routed-lr0.001-s2.json", "rate": 0.001, "seed": 2, "loss": 1.0923, "seconds": 923},
+    {"file": "runs/8000/ff-routed-lr0.002-s0.json", "rate": 0.002, "seed": 0, "loss": 1.0884, "seconds": 916}
+   ]
+  },
+  {
+   "cell": {"steps": 8000},
+   "stored_weights": 6515456,
+   "rate": 0.001,
+   "loss": 1.0767,
+   "seed_sd": 0.0021,
+   "runs": [
+    {"file": "runs/8000/full-lr0.0005-s0.json", "rate": 0.0005, "seed": 0, "loss": 1.1072, "seconds": 380},
+    {"file": "runs/8000/full-lr0.001-s0.json", "rate": 0.001, "seed": 0, "loss": 1.0784, "seconds": 492},
+    {"file": "runs/8000/full-lr0.001-s1.json", "rate": 0.001, "seed": 1, "loss": 1.0744, "seconds": 409},
+    {"file": "runs/8000/full-lr0.001-s2.json", "rate": 0.001, "seed": 2, "loss": 1.0772, "seconds": 426},
+    {"file": "runs/8000/full-lr0.002-s0.json", "rate": 0.002, "seed": 0, "loss": 1.0538, "seconds": 397}
+   ]
+  },
+  {
+   "cell": {"modules": 1, "steps": 8000},
+   "stored_weights": 987136,
+   "rate": 0.001,
+   "loss": 1.4265,
+   "seed_sd": 0.0017,
+   "runs": [
+    {"file": "runs/8000/plain-l1-lr0.0005-s0.json", "rate": 0.0005, "seed": 0, "loss": 1.4541, "seconds": 63},
+    {"file": "runs/8000/plain-l1-lr0.001-s0.json", "rate": 0.001, "seed": 0, "loss": 1.4254, "seconds": 78},
+    {"file": "runs/8000/plain-l1-lr0.001-s1.json", "rate": 0.001, "seed": 1, "loss": 1.4285, "seconds": 72},
+    {"file": "runs/8000/plain-l1-lr0.001-s2.json", "rate": 0.001, "seed": 2, "loss": 1.4257, "seconds": 63},
+    {"file": "runs/8000/plain-l1-lr0.002-s0.json", "rate": 0.002, "seed": 0, "loss": 1.4204, "seconds": 293}
+   ]
+  },
+  {
+   "cell": {"modules": 2, "steps": 8000},
+   "stored_weights": 1776896,
+   "rate": 0.001,
+   "loss": 1.1775,
+   "seed_sd": 0.0025,
+   "runs": [
+    {
+     "file": "runs/8000/plain-l2-lr0.0005-s0.json",
+     "rate": 0.0005,
+     "seed": 0,
+     "loss": 1.2171,
+     "seconds": 648
+    },
+    {"file": "runs/8000/plain-l2-lr0.001-s0.json", "rate": 0.001, "seed": 0, "loss": 1.175, "seconds": 117},
+    {"file": "runs/8000/plain-l2-lr0.001-s1.json", "rate": 0.001, "seed": 1, "loss": 1.1799, "seconds": 114},
+    {"file": "runs/8000/plain-l2-lr0.001-s2.json", "rate": 0.001, "seed": 2, "loss": 1.1775, "seconds": 108},
+    {"file": "runs/8000/plain-l2-lr0.002-s0.json", "rate": 0.002, "seed": 0, "loss": 1.1659, "seconds": 121}
+   ]
+  },
+  {
+   "cell": {"modules": 4, "steps": 8000},
+   "stored_weights": 3356416,
+   "rate": 0.001,
+   "loss": 1.1158,
+   "seed_sd": 0.0052,
+   "runs": [
+    {
+     "file": "runs/8000/plain-l4-lr0.0005-s0.json",
+     "rate": 0.0005,
+     "seed": 0,
+     "loss": 1.1657,
+     "seconds": 199
+    },
+    {"file": "runs/8000/plain-l4-lr0.001-s0.json", "rate": 0.001, "seed": 0, "loss": 1.1113, "seconds": 260},
+    {"file": "runs/8000/plain-l4-lr0.001-s1.json", "rate": 0.001, "seed": 1, "loss": 1.1146, "seconds": 218},
+    {"file": "runs/8000/plain-l4-lr0.001-s2.json", "rate": 0.001, "seed": 2, "loss": 1.1214, "seconds": 208},
+    {"file": "runs/8000/plain-l4-lr0.002-s0.json", "rate": 0.002, "seed": 0, "loss": 1.0984, "seconds": 199}
+   ]
+  },
+  {
+   "cell": {"modules": 6, "steps": 8000},
+   "stored_weights": 4935936,
+   "rate": 0.001,
+   "loss": 1.0952,
+   "seed_sd": 0.008,
+   "runs": [
+    {
+     "file": "runs/8000/plain-l6-lr0.0005-s0.json",
+     "rate": 0.0005,
+     "seed": 0,
+     "loss": 1.1317,
+     "seconds": 291
+    },
+    {"file": "runs/8000/plain-l6-lr0.001-s0.json", "rate": 0.001, "seed": 0, "loss": 1.1021, "seconds": 565},
+    {"file": "runs/8000/plain-l6-lr0.001-s1.json", "rate": 0.001, "seed": 1, "loss": 1.0864, "seconds": 304},
+    {"file": "runs/8000/plain-l6-lr0.001-s2.json", "rate": 0.001, "seed": 2, "loss": 1.0971, "seconds": 304},
+    {"file": "runs/8000/plain-l6-lr0.002-s0.json", "rate": 0.002, "seed": 0, "loss": 1.0743, "seconds": 291}
+   ]
+  },
+  {
+   "cell": {"width": 128, "steps": 8000},
+   "stored_weights": 1684992,
+   "rate": 0.001,
+   "loss": 1.1939,
+   "seed_sd": 0.0067,
+   "runs": [
+    {
+     "file": "runs/8000/plain-w128-lr0.0005-s0.json",
+     "rate": 0.0005,
+     "seed": 0,
+     "loss": 1.2433,
+     "seconds": 198
+    },
+    {
+     "file": "runs/8000/plain-w128-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.1949,
+     "seconds": 261
+    },
+    {
+     "file": "runs/8000/plain-w128-lr0.001-s1.json",
+     "rate": 0.001,
+     "seed": 1,
+     "loss": 1.1867,
+     "seconds": 207
+    },
+    {"file": "runs/8000/plain-w128-lr0.001-s2.json", "rate": 0.001, "seed": 2, "loss": 1.2, "seconds": 243},
+    {
+     "file": "runs/8000/plain-w128-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.1674,
+     "seconds": 198
+    }
+   ]
+  },
+  {
+   "cell": {"width": 160, "steps": 8000},
+   "stored_weights": 2597696,
+   "rate": 0.001,
+   "loss": 1.1544,
+   "seed_sd": 0.0043,
+   "runs": [
+    {
+     "file": "runs/8000/plain-w160-lr0.0005-s0.json",
+     "rate": 0.0005,
+     "seed": 0,
+     "loss": 1.1878,
+     "seconds": 272
+    },
+    {
+     "file": "runs/8000/plain-w160-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.1503,
+     "seconds": 342
+    },
+    {"file": "runs/8000/plain-w160-lr0.001-s1.json", "rate": 0.001, "seed": 1, "loss": 1.154, "seconds": 282},
+    {
+     "file": "runs/8000/plain-w160-lr0.001-s2.json",
+     "rate": 0.001,
+     "seed": 2,
+     "loss": 1.1589,
+     "seconds": 310
+    },
+    {
+     "file": "runs/8000/plain-w160-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.1185,
+     "seconds": 272
+    }
+   ]
+  },
+  {
+   "cell": {"width": 192, "steps": 8000},
+   "stored_weights": 3707008,
+   "rate": 0.001,
+   "loss": 1.1177,
+   "seed_sd": 0.0027,
+   "runs": [
+    {
+     "file": "runs/8000/plain-w192-lr0.0005-s0.json",
+     "rate": 0.0005,
+     "seed": 0,
+     "loss": 1.1527,
+     "seconds": 303
+    },
+    {
+     "file": "runs/8000/plain-w192-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.1194,
+     "seconds": 443
+    },
+    {
+     "file": "runs/8000/plain-w192-lr0.001-s1.json",
+     "rate": 0.001,
+     "seed": 1,
+     "loss": 1.1191,
+     "seconds": 321
+    },
+    {
+     "file": "runs/8000/plain-w192-lr0.001-s2.json",
+     "rate": 0.001,
+     "seed": 2,
+     "loss": 1.1146,
+     "seconds": 348
+    },
+    {
+     "file": "runs/8000/plain-w192-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.0837,
+     "seconds": 304
+    }
+   ]
+  },
+  {
+   "cell": {"width": 224, "steps": 8000},
+   "stored_weights": 5012928,
+   "rate": 0.001,
+   "loss": 1.0974,
+   "seed_sd": 0.0056,
+   "runs": [
+    {
+     "file": "runs/8000/plain-w224-lr0.0005-s0.json",
+     "rate": 0.0005,
+     "seed": 0,
+     "loss": 1.1208,
+     "seconds": 353
+    },
+    {
+     "file": "runs/8000/plain-w224-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.0915,
+     "seconds": 479
+    },
+    {
+     "file": "runs/8000/plain-w224-lr0.001-s1.json",
+     "rate": 0.001,
+     "seed": 1,
+     "loss": 1.0979,
+     "seconds": 373
+    },
+    {
+     "file": "runs/8000/plain-w224-lr0.001-s2.json",
+     "rate": 0.001,
+     "seed": 2,
+     "loss": 1.1027,
+     "seconds": 373
+    },
+    {
+     "file": "runs/8000/plain-w224-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.0648,
+     "seconds": 353
+    }
+   ]
+  },
+  {
+   "cell": {"width": 96, "steps": 8000},
+   "stored_weights": 968896,
+   "rate": 0.001,
+   "loss": 1.2616,
+   "seed_sd": 0.004,
+   "runs": [
+    {
+     "file": "runs/8000/plain-w96-lr0.0005-s0.json",
+     "rate": 0.0005,
+     "seed": 0,
+     "loss": 1.3421,
+     "seconds": 185
+    },
+    {"file": "runs/8000/plain-w96-lr0.001-s0.json", "rate": 0.001, "seed": 0, "loss": 1.2638, "seconds": 182},
+    {"file": "runs/8000/plain-w96-lr0.001-s1.json", "rate": 0.001, "seed": 1, "loss": 1.2569, "seconds": 181},
+    {"file": "runs/8000/plain-w96-lr0.001-s2.json", "rate": 0.001, "seed": 2, "loss": 1.264, "seconds": 179},
+    {"file": "runs/8000/plain-w96-lr0.002-s0.json", "rate": 0.002, "seed": 0, "loss": 1.2306, "seconds": 201}
+   ]
+  }
+ ]
+}

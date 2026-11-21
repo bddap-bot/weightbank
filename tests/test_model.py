@@ -5,20 +5,28 @@ import math
 import torch
 from torch import Tensor, nn
 
-from weightbank.configs import BANK, CONFIGS, FIXED_MAP, FULL, KEYS, MODULES, NO_ROUTER, NOISE_FREE, OWN_CHUNK
+from weightbank import train
+from weightbank.configs import BANK, FIXED_MAP, FULL, KEYS, MODULES, NO_ROUTER, NOISE_FREE, OWN_CHUNK, config, named
 from weightbank.model import (
+    CONTEXT,
+    MODERN,
     VOCAB,
     Bank,
+    FeedForward,
     Fixed,
     KeyRouter,
     ModelConfig,
     Own,
+    RootMeanSquareNorm,
     Routed,
     ScoreRouter,
+    Settled,
     Sharing,
     Transformer,
+    attend,
     mix,
     pick,
+    rotate,
 )
 
 
@@ -139,7 +147,7 @@ def test_routed_model_is_causal() -> None:
 
 def test_banks_store_half_the_routed_weights() -> None:
     def stored(name: str) -> tuple[int, int]:
-        model = Transformer(CONFIGS[name])
+        model = Transformer(config(name))
         return (
             sum(parameter.numel() for chunk in model.feed_forward.chunks for parameter in chunk.parameters()),
             sum(parameter.numel() for chunk in model.attention.chunks for parameter in chunk.parameters()),
@@ -152,7 +160,7 @@ def test_banks_store_half_the_routed_weights() -> None:
     assert stored("both-routed") == (feed_forward // 2, attention // 2)
     assert stored(NO_ROUTER) == (feed_forward // 2, attention // 2)
     assert stored(OWN_CHUNK) == (feed_forward, attention)
-    assert Transformer(CONFIGS[OWN_CHUNK]).stored_weights() == Transformer(CONFIGS[FULL]).stored_weights()
+    assert Transformer(config(OWN_CHUNK)).stored_weights() == Transformer(config(FULL)).stored_weights()
 
 
 def test_mix_sends_a_gradient_to_the_pick_of_a_chunk_no_token_picked() -> None:
@@ -273,9 +281,9 @@ def test_key_router_samples_in_training_and_every_weight_gets_a_gradient() -> No
 
 
 def test_router_variants_store_the_banks_of_the_routed_model() -> None:
-    routed = Transformer(CONFIGS["both-routed"])
-    noise_free = Transformer(CONFIGS[NOISE_FREE])
-    keys = Transformer(CONFIGS[KEYS])
+    routed = Transformer(config("both-routed"))
+    noise_free = Transformer(config(NOISE_FREE))
+    keys = Transformer(config(KEYS))
     assert noise_free.stored_weights() == routed.stored_weights()
     assert isinstance(noise_free.attention.router, ScoreRouter) and not noise_free.attention.router.noise
     assert isinstance(routed.attention.router, ScoreRouter) and routed.attention.router.noise
@@ -296,9 +304,9 @@ def test_router_variants_store_the_banks_of_the_routed_model() -> None:
 def test_the_fixed_map_stores_one_plain_layer_per_chunk_and_every_module_keeps_its_norms() -> None:
     norms = 2 * 2 * 256
     for chunks, name in FIXED_MAP.items():
-        model = Transformer(CONFIGS[name])
+        model = Transformer(config(name))
         assert len(model.attention.chunks) == len(model.feed_forward.chunks) == chunks
-        plain = Transformer(CONFIGS[FULL if chunks == MODULES else f"plain-l{chunks}"])
+        plain = Transformer(config(FULL if chunks == MODULES else named(modules=chunks)))
         assert model.stored_weights() == plain.stored_weights() + (MODULES - chunks) * norms
         _, trace = model(tokens())
         for kind in (trace.feed_forward, trace.attention):
@@ -316,3 +324,172 @@ def test_both_router_forms_start_near_indifferent_at_the_same_scale() -> None:
         assert float(logits.softmax(-1).amax(-1).mean()) < 0.3
         spreads.append(float(logits.std(-1).mean()))
     assert 0.5 < spreads[1] / spreads[0] < 2
+
+
+def test_a_correction_starts_as_no_change_and_then_changes_only_its_module() -> None:
+    torch.manual_seed(0)
+    shared = small(Fixed(1), Fixed(1))
+    corrected = Transformer(ModelConfig(4, 32, feed_forward=Fixed(1), attention=Fixed(1), rank=3))
+    corrected.load_state_dict(shared.state_dict(), strict=False)
+    batch = tokens()
+    assert torch.equal(corrected(batch)[0], shared(batch)[0])
+    logits, _ = corrected(batch)
+    logits.square().mean().backward()
+    for bank in (corrected.feed_forward, corrected.attention):
+        assert bank.corrections is not None and len(bank.corrections) == 4
+        for correction in bank.corrections:
+            for part in (correction.first, correction.second):
+                assert part.write.grad is not None and bool(part.write.grad.abs().sum() > 0)
+    last = corrected.feed_forward.corrections
+    assert last is not None
+    with torch.no_grad():
+        last[3].second.write.normal_()
+    changed, _ = corrected(batch)
+    assert not torch.allclose(changed, logits)
+    with torch.no_grad():
+        last[3].second.write.zero_()
+        last[0].first.write.normal_()
+    assert not torch.allclose(corrected(batch)[0], logits)
+
+
+def test_a_correction_applies_under_a_router_and_needs_a_bank() -> None:
+    torch.manual_seed(0)
+    model = Transformer(ModelConfig(4, 32, feed_forward=Routed(2), rank=2))
+    assert model.attention.corrections is None and model.feed_forward.corrections is not None
+    model.eval()
+    batch = tokens()
+    before, _ = model(batch)
+    with torch.no_grad():
+        model.feed_forward.corrections[1].first.write.normal_()
+    assert not torch.allclose(model(batch)[0], before)
+    try:
+        ModelConfig(4, 32, rank=2)
+    except ValueError:
+        return
+    raise AssertionError("a correction with nothing shared was accepted")
+
+
+def test_a_corrected_bank_stores_the_weights_of_the_bank_twice_its_size() -> None:
+    def stored(**cell: int | str) -> int:
+        return Transformer(config(named(**cell))).stored_weights()
+
+    assert stored(shared="both", chunks=2) - stored(shared="both", chunks=1, rank=24) == 2304
+    assert stored(shared="both", chunks=1, rank=24) - stored(shared="both", chunks=1) == 8 * 24 * (2 * 1280 + 1024 + 512)
+
+
+def modern(feed_forward: Sharing = Own(), attention: Sharing = Own(), modules: int = 4, width: int = 32) -> Transformer:
+    return Transformer(ModelConfig(modules, width, feed_forward=feed_forward, attention=attention, architecture=MODERN))
+
+
+def test_the_modern_architecture_has_no_position_table_and_stores_about_the_classic_weights() -> None:
+    model = modern(modules=8, width=256)
+    classic = Transformer(ModelConfig(8, 256))
+    assert model.position is None and classic.position is not None
+    assert all(isinstance(layer, RootMeanSquareNorm) for layer in (*model.attention_norm, *model.feed_forward_norm, model.final_norm))
+    assert model.feed_forward.chunks[0].up.out_features == 2 * model.feed_forward.chunks[0].down.in_features
+    positions = CONTEXT * 256
+    assert abs(model.stored_weights() - (classic.stored_weights() - positions)) < 0.005 * classic.stored_weights()
+    try:
+        ModelConfig(8, 256, architecture="other")
+    except ValueError:
+        return
+    raise AssertionError("an unknown architecture was accepted")
+
+
+def test_the_modern_model_is_causal_and_reads_order_only_through_rotation() -> None:
+    torch.manual_seed(0)
+    for model in (modern(), modern(Fixed(2), Routed(2))):
+        model.eval()
+        first = tokens(2, 12)
+        second = first.clone()
+        second[:, -1] = (second[:, -1] + 1) % VOCAB
+        assert torch.allclose(model(first)[0][:, :-1], model(second)[0][:, :-1], atol=1e-5)
+        swapped = first.clone()
+        swapped[:, 0], swapped[:, 1] = first[:, 1], first[:, 0]
+        assert not torch.allclose(model(first)[0][:, -1], model(swapped)[0][:, -1], atol=1e-5)
+
+
+def test_rotation_keeps_length_and_scores_depend_on_distance_alone() -> None:
+    torch.manual_seed(0)
+    query, key = torch.randn(8), torch.randn(8)
+    turned_query, turned_key = rotate(query.expand(10, 8)), rotate(key.expand(10, 8))
+    assert torch.allclose(turned_query.norm(dim=-1), query.norm().expand(10), atol=1e-5)
+    scores = turned_query @ turned_key.T
+    assert torch.allclose(scores[5, 3], scores[9, 7], atol=1e-5) and torch.allclose(scores[2, 0], scores[5, 3], atol=1e-5)
+    assert not torch.allclose(scores[5, 3], scores[5, 4], atol=1e-5)
+
+
+def test_the_root_mean_square_norm_scales_to_unit_size_times_its_weight() -> None:
+    norm = RootMeanSquareNorm(16)
+    out = norm(torch.randn(5, 16) * 7)
+    assert torch.allclose(out.square().mean(-1), torch.ones(5), atol=1e-4)
+    with torch.no_grad():
+        norm.weight.fill_(2.0)
+    assert torch.allclose(norm(torch.randn(5, 16)).square().mean(-1), torch.full((5,), 4.0), atol=1e-3)
+
+
+def test_rotation_turns_keys_as_well_as_queries() -> None:
+    torch.manual_seed(0)
+    same = torch.randn(8).expand(1, 6, 8)
+    qkv = torch.cat((same, same, torch.randn(1, 6, 8)), dim=-1)
+    assert not torch.allclose(attend(qkv, True), attend(qkv, False), atol=1e-5)
+
+
+def test_the_gate_multiplies_the_value() -> None:
+    torch.manual_seed(0)
+    step = FeedForward(ModelConfig(4, 32, architecture=MODERN))
+    hidden = step.down.in_features
+    assert not torch.allclose(step(torch.randn(3, 32)), step.down.bias.expand(3, 32))
+    with torch.no_grad():
+        step.up.weight[hidden:].zero_()
+        step.up.bias[hidden:].zero_()
+    assert torch.allclose(step(torch.randn(3, 32)), step.down.bias.expand(3, 32))
+
+
+def text() -> Tensor:
+    return torch.randint(VOCAB, (4 * CONTEXT + 1,), dtype=torch.uint8)
+
+
+def test_settling_picks_fixes_each_module_to_its_most_common_chunk() -> None:
+    torch.manual_seed(0)
+    model = small(Routed(4, settled=Settled.PICKS), Routed(4, settled=Settled.PICKS))
+    corpus = text()
+    seen = train.evaluate(model, corpus)
+    assert seen.feed_forward is not None and seen.attention is not None
+    common = [[row.index(max(row)) for row in stats.counts] for stats in (seen.feed_forward, seen.attention)]
+    train.settle(model, corpus)
+    assert [model.feed_forward.settled_picks, model.attention.settled_picks] == common
+    _, trace = model(tokens())
+    for kind, expected in ((trace.feed_forward, common[0]), (trace.attention, common[1])):
+        assert [picks.chunk.unique().tolist() for picks in kind] == [[chunk] for chunk in expected]
+
+
+def test_settling_the_router_stops_its_learning_and_keeps_picks_by_input() -> None:
+    torch.manual_seed(0)
+    model = small(Routed(4, settled=Settled.ROUTER), Own())
+    train.settle(model, text())
+    assert model.feed_forward.settled_picks is None and model.feed_forward.router is not None
+    logits, trace = model(tokens())
+    logits.square().mean().backward()
+    assert all(parameter.grad is None for parameter in model.feed_forward.router.parameters())
+    assert all(parameter.grad is not None for chunk in model.feed_forward.chunks for parameter in chunk.parameters())
+    assert any(len(picks.chunk.unique()) > 1 for picks in trace.feed_forward)
+
+
+def test_the_classic_tables_start_as_they_always_have() -> None:
+    torch.manual_seed(0)
+    model = small(Own(), Own())
+    torch.manual_seed(0)
+    token, position = nn.Embedding(VOCAB, 32), nn.Embedding(CONTEXT, 32)
+    for embedding in (token, position):
+        nn.init.normal_(embedding.weight, std=0.02)
+    assert model.position is not None
+    assert torch.equal(model.token.weight, token.weight) and torch.equal(model.position.weight, position.weight)
+
+
+def test_a_model_that_settles_nothing_is_left_alone() -> None:
+    torch.manual_seed(0)
+    model = small(Routed(4), Fixed(2))
+    train.settle(model, torch.empty(0, dtype=torch.uint8))
+    assert model.feed_forward.settled_picks is None and model.feed_forward.router is not None
+    assert all(parameter.requires_grad for parameter in model.parameters())
