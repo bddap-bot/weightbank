@@ -30,6 +30,17 @@ choosing a chunk per token costs loss against a plain model and against fixed sh
 same weights, and fixed sharing is the only arrangement here that beats a plain model of
 equal storage.
 
+The loop described below has since run two rounds at the long budget; the cells they
+tried are the stars on the chart. A low-rank correction per module on one shared chunk does not beat a second chunk at
+equal stored weights. And the gain from reuse holds in a modern transformer (rotary
+positions, root-mean-square norms, a gated feed-forward): eight modules reusing four chunks
+through the fixed map reach 1.0012 where four modules that own the same four chunks reach
+1.0403, a gain of 0.039 against 0.019 for the same pair in the classic architecture. That
+is the result nearest to something to adopt: a model limited by stored weights does better
+running its chunks twice than once. It is one dataset, one size and one comparison; the
+modern model narrowed to the same stored weights, the stronger plain control in the classic
+architecture, has not been run.
+
 ![Validation loss against stored weights](chart.png)
 
 The chart is the long budget, whole on the left and enlarged between 3 and 7 million stored
@@ -40,8 +51,14 @@ module-to-chunk map with no router at 1, 2, 4 and 8 chunks. The fixed map at 4 c
 three models with both banks routed store the same weights to within 1.2%; their four points
 are drawn side by side so that none hides another, which the chart notes under its panels.
 Points are means of three seeds. A star is a cell with three seeds at this budget beyond
-those of the first two experiments, so far the one the loop described next has tried; it is
-drawn just right of its stored weights so that it hides no point of equal size.
+those of the first two experiments, tried by the loop described next; it is drawn just
+right of its stored weights so that it hides no point of equal size. The two lines and the
+other points are the classic architecture; a star of the modern architecture is read
+against the other modern star, not against the lines. The legend label of every point and
+star is spelled from the plain words the ledger gives each axis value: what the cell
+shares, the values it has off the default, and for a cell that shares weights also how a
+module gets its chunk and how many chunks a bank holds. A line's label opens with the same
+words for what its cells have in common.
 
 ## The design space and the loop
 
@@ -88,7 +105,7 @@ hand in the ledger; statuses are computed.
 | priority | hypothesis | statement | settling comparisons (lower minus higher, by seed) | status |
 |---|---|---|---|---|
 | 1 | low-rank-correction | A shared bank plus a low-rank correction per module beats plain sharing at equal stored weights: one chunk per bank with a rank-24 correction in each of the 8 modules reaches a lower loss than the fixed map with two chunks, which stores 2,304 more weights (0.1%). | `32000/both-c1-r24` below `32000/both-c2`: +0.0094, +0.0081, +0.0023 | **refuted** |
-| 2 | reuse-survives-the-modern-architecture | The gain from reuse survives the modern architecture: with rotary positions, root-mean-square norms and a gated feed-forward, eight modules reusing four chunks still beat the plain model of four modules. | `32000/both-modern` below `32000/plain-l4-modern`: not run | **open** |
+| 2 | reuse-survives-the-modern-architecture | The gain from reuse survives the modern architecture: with rotary positions, root-mean-square norms and a gated feed-forward, eight modules reusing four chunks still beat the plain model of four modules. | `32000/both-modern` below `32000/plain-l4-modern`: -0.0425, -0.0422, -0.0326 | **supported** |
 | 3 | picking-lock-in | A per-input pick loses to the fixed map because routers lock in early, near-random picks: with each module frozen to its router's most common pick after a quarter of training, the model still loses to the fixed map of module i to chunk i mod N. | `32000/both` below `32000/both-frozen-picks`: not run | **open** |
 | 3 | picking-chase | A per-input pick loses because chunks and router chase each other: holding the router's weights still after a quarter of training beats letting it learn throughout. | `32000/both-stopped-router` below `32000/both-routed`: not run | **open** |
 | 3 | picking-worse-function | A per-input pick loses because mixing chunks token by token is a worse function than one chunk per module, even under a router that no longer moves: frozen picks beat a stopped router. | `32000/both-frozen-picks` below `32000/both-stopped-router`: not run | **open** |
@@ -106,7 +123,10 @@ hand in the ledger; statuses are computed.
 2. Cost each unfinished comparison: the steps its two cells still lack under the run
    protocol of "Choosing the learning rate" (three runs at the first budget, at least two
    at the cell's own budget to choose the rate, then the other two seeds), at the seconds
-   per step of the tried cell that differs on the fewest axes, the slowest among ties.
+   per step of the tried cell that differs on the fewest axes, the slowest among ties. A
+   tried cell's seconds per step are those of its fastest run with a finite loss at any
+   budget: a run that sat stopped or shared the card only gained time, so the fastest is the
+   nearest to training alone.
 3. Pick the first hypothesis with a comparison costing at most H GPU-hours, and its
    cheapest such comparison. Hypotheses passed over, as too costly or for a rate sweep that
    cannot go on, are named in the round.
@@ -114,7 +134,14 @@ hand in the ledger; statuses are computed.
    seeds costs nothing. Then rewrite the ledger's cells and statuses from the run files, and
    this report and chart from the ledger.
 
-The estimate is a floor, since a rate sweep that lands on the edge of its grid adds runs.
+The estimate is a floor, since a rate sweep that lands on the edge of its grid adds runs,
+and it prices a new value of an axis at the pace of the old one. A run's training seconds
+are summed over its 500-step log windows, each window at the median pace of itself and the
+two windows on either side, which leaves out a stretch of up to two windows that the
+process sat stopped while other work held the card, keeps a pace that changes during
+training, and does not count the validation pass after each window. The runs before round 2 recorded
+the wall time inside their training loop instead, stops included; their files keep those
+seconds, and the estimate reads past them by taking each cell's fastest run.
 With no hypothesis to pick the loop trains nothing. A comparison whose runs end without
 three finite seeds is marked abandoned in the ledger and not picked again.
 
@@ -130,6 +157,16 @@ low-rank-correction (priority 1) is the highest-priority open hypothesis with an
 
 Read against one chunk without the correction, which reaches 1.1177 with 994,304 stored weights: the rank-24 correction recovers 0.0527 of the 0.0593 that a second chunk buys, for 2,304 fewer stored weights than the second chunk, and stops 0.0066 short of it. The GPU-hours are wall time inside the training loop, including stretches a run sat paused while other work used the card.
 
+### Round 2: reuse-survives-the-modern-architecture
+
+reuse-survives-the-modern-architecture (priority 2) is the highest-priority open hypothesis with an unfinished comparison that fits 12 GPU-hours; the cheapest is 32000/both-modern against 32000/plain-l4-modern, estimated at 3.3 GPU-hours.
+
+32000/both-modern reached 1.0012 nats per byte with 3,289,936 stored weights at rate 0.002; 32000/plain-l4-modern reached 1.0403 with 3,287,888 at rate 0.001. Lower minus higher by seed: -0.0425, -0.0422, -0.0326. reuse-survives-the-modern-architecture went from open to supported.
+
+15 runs, 7.4 GPU-hours of training against an estimate of 3.3; ledger rows written: `32000/both-modern`, `32000/plain-l4-modern`, `8000/both-modern`, `8000/plain-l4-modern`.
+
+In plain words: in a transformer built the way current ones are, eight modules that reuse four chunks by a fixed map beat four modules that own the same four chunks, at stored weights 2,048 apart (0.06%) and at every seed. The gain is 0.0391, where the same pair in the classic architecture gains 0.0186 (1.0134 against 1.0320), so the benefit of reuse does not come from the older design. What the round does not show: whether the shared model beats a modern model narrowed to the same stored weights, the better plain control in the classic architecture, which has no modern runs; whether a per-token pick fares differently in the modern architecture; and anything at another size or on other data. The modern cells trained at about twice the seconds per step of the fastest classic runs of the same shape, which the estimate, priced from classic cells, did not foresee; one more run in the rate sweep of the plain model accounts for the rest of the 7.4 GPU-hours.
+
 ### Every cell
 
 One row per cell and budget, from the run files; the rate, mean and seed spread are filled
@@ -143,6 +180,7 @@ where three seeds share a rate.
 | `32000/both-c2` | both | fixed | 2 | 0 | 8 | 256 | 32000 | classic | 1,783,040 | 0.001 | 1.0583 | 0.0039 | 5 |
 | `32000/both-c8` | both | fixed | 8 | 0 | 8 | 256 | 32000 | classic | 6,515,456 | 0.002 | 0.9841 | 0.0008 | 3 |
 | `32000/both` | both | fixed | 4 | 0 | 8 | 256 | 32000 | classic | 3,360,512 | 0.002 | 1.0134 | 0.0012 | 4 |
+| `32000/both-modern` | both | fixed | 4 | 0 | 8 | 256 | 32000 | modern | 3,289,936 | 0.002 | 1.0012 | 0.0029 | 4 |
 | `32000/both-routed-argmax` | both | argmax | 4 | 0 | 8 | 256 | 32000 | classic | 3,394,952 | 0.002 | 1.0459 | 0.0021 | 5 |
 | `32000/both-routed-keys` | both | keys | 4 | 0 | 8 | 256 | 32000 | classic | 3,398,016 | 0.002 | 1.0321 | 0.0022 | 5 |
 | `32000/both-routed` | both | routed | 4 | 0 | 8 | 256 | 32000 | classic | 3,394,952 | 0.002 | 1.0321 | 0.0013 | 5 |
@@ -151,6 +189,7 @@ where three seeds share a rate.
 | `32000/plain-l1` | none | fixed | 4 | 0 | 1 | 256 | 32000 | classic | 987,136 | 0.002 | 1.3775 | 0.0013 | 4 |
 | `32000/plain-l2` | none | fixed | 4 | 0 | 2 | 256 | 32000 | classic | 1,776,896 | 0.002 | 1.1183 | 0.0004 | 4 |
 | `32000/plain-l4` | none | fixed | 4 | 0 | 4 | 256 | 32000 | classic | 3,356,416 | 0.002 | 1.0320 | 0.0013 | 5 |
+| `32000/plain-l4-modern` | none | fixed | 4 | 0 | 4 | 256 | 32000 | modern | 3,287,888 | 0.001 | 1.0403 | 0.0069 | 5 |
 | `32000/plain-l6` | none | fixed | 4 | 0 | 6 | 256 | 32000 | classic | 4,935,936 | 0.002 | 1.0019 | 0.0022 | 5 |
 | `32000/plain-w128` | none | fixed | 4 | 0 | 8 | 128 | 32000 | classic | 1,684,992 | 0.004 | 1.0779 | 0.0060 | 6 |
 | `32000/plain-w160` | none | fixed | 4 | 0 | 8 | 160 | 32000 | classic | 2,597,696 | 0.004 | 1.0413 | 0.0017 | 6 |
@@ -163,6 +202,7 @@ where three seeds share a rate.
 | `8000/both-c2` | both | fixed | 2 | 0 | 8 | 256 | 8000 | classic | 1,783,040 | 0.001 | 1.1384 | 0.0073 | 5 |
 | `8000/both-c8` | both | fixed | 8 | 0 | 8 | 256 | 8000 | classic | 6,515,456 | 0.001 | 1.0768 | 0.0023 | 3 |
 | `8000/both` | both | fixed | 4 | 0 | 8 | 256 | 8000 | classic | 3,360,512 | 0.001 | 1.1004 | 0.0049 | 5 |
+| `8000/both-modern` | both | fixed | 4 | 0 | 8 | 256 | 8000 | modern | 3,289,936 |  |  |  | 3 |
 | `8000/both-routed-argmax` | both | argmax | 4 | 0 | 8 | 256 | 8000 | classic | 3,394,952 | 0.001 | 1.1581 | 0.0024 | 5 |
 | `8000/both-routed-keys` | both | keys | 4 | 0 | 8 | 256 | 8000 | classic | 3,398,016 | 0.001 | 1.1506 | 0.0088 | 5 |
 | `8000/both-routed` | both | routed | 4 | 0 | 8 | 256 | 8000 | classic | 3,394,952 | 0.001 | 1.1452 | 0.0042 | 5 |
@@ -171,6 +211,7 @@ where three seeds share a rate.
 | `8000/plain-l1` | none | fixed | 4 | 0 | 1 | 256 | 8000 | classic | 987,136 | 0.001 | 1.4265 | 0.0017 | 5 |
 | `8000/plain-l2` | none | fixed | 4 | 0 | 2 | 256 | 8000 | classic | 1,776,896 | 0.001 | 1.1775 | 0.0025 | 5 |
 | `8000/plain-l4` | none | fixed | 4 | 0 | 4 | 256 | 8000 | classic | 3,356,416 | 0.001 | 1.1158 | 0.0052 | 5 |
+| `8000/plain-l4-modern` | none | fixed | 4 | 0 | 4 | 256 | 8000 | modern | 3,287,888 |  |  |  | 3 |
 | `8000/plain-l6` | none | fixed | 4 | 0 | 6 | 256 | 8000 | classic | 4,935,936 | 0.001 | 1.0952 | 0.0080 | 5 |
 | `8000/plain-w128` | none | fixed | 4 | 0 | 8 | 128 | 8000 | classic | 1,684,992 | 0.001 | 1.1939 | 0.0067 | 5 |
 | `8000/plain-w160` | none | fixed | 4 | 0 | 8 | 160 | 8000 | classic | 2,597,696 | 0.001 | 1.1544 | 0.0043 | 5 |
@@ -399,8 +440,9 @@ by a similar amount. The feed-forward routed gap is of that size at both budgets
 - Private weights: each module keeps its own two layer norms (1,024 weights per module). No
   other per-module add-on. Stored weights count every parameter: bank chunks, routers and
   their module vectors, layer norms, embeddings and the output head.
-- Hardware: one RTX 2080, 8 GB, shared with other work, so wall times are indicative: a
-  run slowed or paused by other work on the GPU counts that time. Runs
+- Hardware: one RTX 2080, 8 GB, shared with other work, so the times of these two
+  experiments are indicative: their runs recorded wall time, and one slowed or paused by
+  other work on the GPU counts that time. Runs
   were trained one at a time. During
   training a routed step computes every chunk for every token (the straight-through gradient
   needs them), which is why routed runs take longer; a hard pick needs only the picked chunk
@@ -672,7 +714,7 @@ First budget:
 
 Both experiments and the learning-rate sweep, from the run files.
 
-| configuration | seed | steps | learning rate | stored weights | final validation loss | wall seconds (training) |
+| configuration | seed | steps | learning rate | stored weights | final validation loss | training seconds |
 |---|---|---|---|---|---|---|
 | attn-routed | 0 | 32,000 | 0.001 | 5,480,004 | 1.0163 | 5024 |
 | attn-routed | 0 | 32,000 | 0.002 | 5,480,004 | 1.0117 | 3851 |
@@ -700,6 +742,10 @@ Both experiments and the learning-rate sweep, from the run files.
 | both | 0 | 32,000 | 0.002 | 3,360,512 | 1.0122 | 1852 |
 | both | 1 | 32,000 | 0.002 | 3,360,512 | 1.0136 | 1743 |
 | both | 2 | 32,000 | 0.002 | 3,360,512 | 1.0145 | 2197 |
+| both-modern | 0 | 32,000 | 0.001 | 3,289,936 | 1.0005 | 3679 |
+| both-modern | 0 | 32,000 | 0.002 | 3,289,936 | 0.9989 | 3570 |
+| both-modern | 1 | 32,000 | 0.002 | 3,289,936 | 1.0044 | 3573 |
+| both-modern | 2 | 32,000 | 0.002 | 3,289,936 | 1.0003 | 3532 |
 | both-routed-argmax | 0 | 32,000 | 0.001 | 3,394,952 | 1.0593 | 5772 |
 | both-routed-argmax | 0 | 32,000 | 0.002 | 3,394,952 | 1.0483 | 5771 |
 | both-routed-argmax | 1 | 32,000 | 0.002 | 3,394,952 | 1.0446 | 5803 |
@@ -737,6 +783,11 @@ Both experiments and the learning-rate sweep, from the run files.
 | plain-l4 | 1 | 32,000 | 0.002 | 3,356,416 | 1.0334 | 801 |
 | plain-l4 | 2 | 32,000 | 0.002 | 3,356,416 | 1.0309 | 784 |
 | plain-l4 | 0 | 32,000 | 0.004 | 3,356,416 | 1.0372 | 867 |
+| plain-l4-modern | 0 | 32,000 | 0.0005 | 3,287,888 | 1.0500 | 1673 |
+| plain-l4-modern | 0 | 32,000 | 0.001 | 3,287,888 | 1.0414 | 1631 |
+| plain-l4-modern | 1 | 32,000 | 0.001 | 3,287,888 | 1.0466 | 1746 |
+| plain-l4-modern | 2 | 32,000 | 0.001 | 3,287,888 | 1.0329 | 1723 |
+| plain-l4-modern | 0 | 32,000 | 0.002 | 3,287,888 | 1.0417 | 1679 |
 | plain-l6 | 0 | 32,000 | 0.001 | 4,935,936 | 1.0215 | 1150 |
 | plain-l6 | 0 | 32,000 | 0.002 | 4,935,936 | 1.0043 | 1146 |
 | plain-l6 | 1 | 32,000 | 0.002 | 4,935,936 | 1.0002 | 1161 |
@@ -794,6 +845,9 @@ Both experiments and the learning-rate sweep, from the run files.
 | both | 1 | 8,000 | 0.001 | 3,360,512 | 1.0975 | 501 |
 | both | 2 | 8,000 | 0.001 | 3,360,512 | 1.1061 | 504 |
 | both | 0 | 8,000 | 0.002 | 3,360,512 | 1.0802 | 662 |
+| both-modern | 0 | 8,000 | 0.0005 | 3,289,936 | 1.0982 | 890 |
+| both-modern | 0 | 8,000 | 0.001 | 3,289,936 | 1.0681 | 866 |
+| both-modern | 0 | 8,000 | 0.002 | 3,289,936 | 1.0626 | 877 |
 | both-routed-argmax | 0 | 8,000 | 0.0005 | 3,394,952 | 1.2087 | 1622 |
 | both-routed-argmax | 0 | 8,000 | 0.001 | 3,394,952 | 1.1594 | 1440 |
 | both-routed-argmax | 1 | 8,000 | 0.001 | 3,394,952 | 1.1553 | 1446 |
@@ -834,6 +888,9 @@ Both experiments and the learning-rate sweep, from the run files.
 | plain-l4 | 1 | 8,000 | 0.001 | 3,356,416 | 1.1146 | 218 |
 | plain-l4 | 2 | 8,000 | 0.001 | 3,356,416 | 1.1214 | 208 |
 | plain-l4 | 0 | 8,000 | 0.002 | 3,356,416 | 1.0984 | 199 |
+| plain-l4-modern | 0 | 8,000 | 0.0005 | 3,287,888 | 1.1524 | 451 |
+| plain-l4-modern | 0 | 8,000 | 0.001 | 3,287,888 | 1.1173 | 429 |
+| plain-l4-modern | 0 | 8,000 | 0.002 | 3,287,888 | 1.1128 | 404 |
 | plain-l6 | 0 | 8,000 | 0.0005 | 4,935,936 | 1.1317 | 291 |
 | plain-l6 | 0 | 8,000 | 0.001 | 4,935,936 | 1.1021 | 565 |
 | plain-l6 | 1 | 8,000 | 0.001 | 4,935,936 | 1.0864 | 304 |

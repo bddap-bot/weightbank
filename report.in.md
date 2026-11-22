@@ -30,6 +30,17 @@ choosing a chunk per token costs loss against a plain model and against fixed sh
 same weights, and fixed sharing is the only arrangement here that beats a plain model of
 equal storage.
 
+The loop described below has since run two rounds at the long budget; the cells they
+tried are the stars on the chart. A low-rank correction per module on one shared chunk does not beat a second chunk at
+equal stored weights. And the gain from reuse holds in a modern transformer (rotary
+positions, root-mean-square norms, a gated feed-forward): eight modules reusing four chunks
+through the fixed map reach 1.0012 where four modules that own the same four chunks reach
+1.0403, a gain of 0.039 against 0.019 for the same pair in the classic architecture. That
+is the result nearest to something to adopt: a model limited by stored weights does better
+running its chunks twice than once. It is one dataset, one size and one comparison; the
+modern model narrowed to the same stored weights, the stronger plain control in the classic
+architecture, has not been run.
+
 ![Validation loss against stored weights](chart.png)
 
 The chart is the long budget, whole on the left and enlarged between 3 and 7 million stored
@@ -40,8 +51,14 @@ module-to-chunk map with no router at 1, 2, 4 and 8 chunks. The fixed map at 4 c
 three models with both banks routed store the same weights to within 1.2%; their four points
 are drawn side by side so that none hides another, which the chart notes under its panels.
 Points are means of three seeds. A star is a cell with three seeds at this budget beyond
-those of the first two experiments, so far the one the loop described next has tried; it is
-drawn just right of its stored weights so that it hides no point of equal size.
+those of the first two experiments, tried by the loop described next; it is drawn just
+right of its stored weights so that it hides no point of equal size. The two lines and the
+other points are the classic architecture; a star of the modern architecture is read
+against the other modern star, not against the lines. The legend label of every point and
+star is spelled from the plain words the ledger gives each axis value: what the cell
+shares, the values it has off the default, and for a cell that shares weights also how a
+module gets its chunk and how many chunks a bank holds. A line's label opens with the same
+words for what its cells have in common.
 
 ## The design space and the loop
 
@@ -87,7 +104,10 @@ hand in the ledger; statuses are computed.
 2. Cost each unfinished comparison: the steps its two cells still lack under the run
    protocol of "Choosing the learning rate" (three runs at the first budget, at least two
    at the cell's own budget to choose the rate, then the other two seeds), at the seconds
-   per step of the tried cell that differs on the fewest axes, the slowest among ties.
+   per step of the tried cell that differs on the fewest axes, the slowest among ties. A
+   tried cell's seconds per step are those of its fastest run with a finite loss at any
+   budget: a run that sat stopped or shared the card only gained time, so the fastest is the
+   nearest to training alone.
 3. Pick the first hypothesis with a comparison costing at most H GPU-hours, and its
    cheapest such comparison. Hypotheses passed over, as too costly or for a rate sweep that
    cannot go on, are named in the round.
@@ -95,7 +115,14 @@ hand in the ledger; statuses are computed.
    seeds costs nothing. Then rewrite the ledger's cells and statuses from the run files, and
    this report and chart from the ledger.
 
-The estimate is a floor, since a rate sweep that lands on the edge of its grid adds runs.
+The estimate is a floor, since a rate sweep that lands on the edge of its grid adds runs,
+and it prices a new value of an axis at the pace of the old one. A run's training seconds
+are summed over its 500-step log windows, each window at the median pace of itself and the
+two windows on either side, which leaves out a stretch of up to two windows that the
+process sat stopped while other work held the card, keeps a pace that changes during
+training, and does not count the validation pass after each window. The runs before round 2 recorded
+the wall time inside their training loop instead, stops included; their files keep those
+seconds, and the estimate reads past them by taking each cell's fastest run.
 With no hypothesis to pick the loop trains nothing. A comparison whose runs end without
 three finite seeds is marked abandoned in the ledger and not picked again.
 
@@ -243,8 +270,9 @@ by a similar amount. The feed-forward routed gap is of that size at both budgets
 - Private weights: each module keeps its own two layer norms (1,024 weights per module). No
   other per-module add-on. Stored weights count every parameter: bank chunks, routers and
   their module vectors, layer norms, embeddings and the output head.
-- Hardware: one RTX 2080, 8 GB, shared with other work, so wall times are indicative: a
-  run slowed or paused by other work on the GPU counts that time. Runs
+- Hardware: one RTX 2080, 8 GB, shared with other work, so the times of these two
+  experiments are indicative: their runs recorded wall time, and one slowed or paused by
+  other work on the GPU counts that time. Runs
   were trained one at a time. During
   training a routed step computes every chunk for every token (the straight-through gradient
   needs them), which is why routed runs take longer; a hard pick needs only the picked chunk
