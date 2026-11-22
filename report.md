@@ -32,41 +32,50 @@ equal storage.
 
 The loop described below has since run three rounds at the long budget; the cells they
 tried are the stars on the chart. A low-rank correction per module on one shared chunk does
-not beat a second chunk at equal stored weights. The gain from sharing holds in a modern
-transformer (rotary positions, root-mean-square norms, a gated feed-forward), against both
-plain controls. Eight modules reusing four chunks through the fixed map reach 1.0012. Four
-modules that own the same four chunks reach 1.0403, which is 0.039 above. The stronger
-control keeps all eight modules and is narrowed to the same stored weights: at width 184 it
-reaches 1.0133, so the shared model is 0.012 below it, at every seed (0.012, 0.010 and
-0.015; the seeds of each model spread 0.003). Equal stored weights is reached with one width.
-The model builds widths in steps of 8 (four heads, rotary pairs in each), and 184 is the
-nearest to the shared model: it stores 2.1% more weights, where 176 would store 6.4% fewer.
-The plain side therefore has the larger model, and at exactly equal stored weights the gain
-would be no smaller than 0.012; on the classic narrower curve 2.1% of stored weights is worth
-0.002. In the classic architecture the same shared model is 0.008 below the narrower plain
-curve at equal stored weights, so sharing gains at least as much in the modern design as in
-the classic one.
+not beat a second chunk at equal stored weights. Rounds 2 and 3 took the fixed map, eight
+modules reusing four chunks with no router, into a modern transformer (rotary positions,
+root-mean-square norms, a gated feed-forward) and set it against two plain models. The
+shared model reaches 1.0012. Four modules that own the same four chunks reach 1.0403, which
+is 0.039 above. The stronger control keeps all eight modules and is narrowed: at width 184
+it reaches 1.0133, so the shared model is 0.012 below it on average and below it at every
+seed, by 0.012, 0.010 and 0.015, where each model's seeds have a standard deviation of
+0.003.
 
-That is the result nearest to something to adopt: in a transformer of the kind in current
-use, a model limited by stored weights reaches a lower loss as eight modules sharing four
-chunks than as a plain model of the same storage, whether that plain model is made shallow
-or narrow. Round 2's 0.039 overstated the size. The modern plain model of four modules reads
-0.008 worse than the same model in the classic architecture, while the modern shared model
-and the modern narrowed model each read better than their classic counterparts, by 0.012
-and 0.008 (the table under "The modern cells beside the classic architecture"). The plain
-model reading worse in the modern architecture is therefore a property of the cell with four
-modules at full width and not of modern plain models in general, and against a control the
-modern architecture does not handicap the gain is 0.012, under a third of 0.039. No run
-isolates why that one cell reads worse, and no cause is claimed.
+How equal stored weights was reached: with one width, not exactly. A width has to be a
+multiple of 8, so that each of the four heads has an even number of dimensions to rotate in
+pairs. Width 184 stores 2.1% more weights than the shared model and width 176 would store
+6.4% fewer, so the control is the nearer of the two and the larger model. If a modern plain
+model gains from width as the classic ones do, the margin at exactly equal stored weights is
+a little above 0.012: on the classic narrower curve 2.1% of stored weights is worth 0.002.
+No second modern width has been run to show that. In the classic architecture the shared
+model of the same shape is 0.008 below the narrower plain curve at equal stored weights. The
+two margins, 0.012 and 0.008, differ by about one seed standard deviation, so sharing gains
+about as much in the modern design as in the classic one.
+
+That is the result nearest to something to adopt: in this small byte-level transformer with
+the modern parts, a model limited by stored weights reaches a lower loss as eight modules
+sharing four chunks than as either plain model of that storage that was run, four modules at
+full width or eight modules narrowed. Round 2's 0.039 was measured against the weaker of the
+two controls. The modern plain model of four modules reads 0.008 worse than the same cell in
+the classic architecture, while the modern shared model and the modern narrowed model read
+better than their classic counterparts, by 0.012 and 0.008 (the table under "The modern
+cells beside the classic architecture"). Of the two modern plain cells run, then, one reads
+worse than its classic counterpart and one reads better, so the plain model reading worse is
+not general to modern plain models here. No run isolates why the cell of four modules reads
+worse, and no cause is claimed. Against the control that does not read worse the margin is
+0.012, under a third of 0.039.
 
 What this does not show. It is one dataset of bytes, one size (3.3 million stored weights),
-one bank size (four chunks for eight modules) and one training budget. The modern plain
-control is one width and not a curve, so the comparison at equal stored weights rests on a
-plain model 2.1% larger, not on an interpolation. Learning rates are chosen on one seed, and
-the narrowed model's two best rates are 0.0003 apart. The comparison holds stored weights
-equal and not compute: the shared model runs eight modules at width 256, about twice the
-arithmetic per token of eight modules at width 184 or of four at width 256. Whether a
-per-token pick fares differently in the modern architecture has not been run.
+one bank size (four chunks for eight modules), one training budget and three seeds. The
+modern plain control is one width and one depth: it is 2.1% larger than the shared model
+instead of an interpolation between two widths, and no other mix of depth and width at that
+storage, such as six narrower modules, has been run in the modern architecture. Learning
+rates are chosen on seed 0, and the narrowed model's two best rates end 0.0003 apart in
+loss. Stored weights are held equal and compute is not: the shared model runs eight modules
+at width 256, which multiply by about 1.9 times the weights per token of eight modules at
+width 184 and twice those of four modules at width 256. On this GPU a training step of the
+shared model and of the narrowed one took the same time, about 110 ms. Whether a per-token
+pick fares differently in the modern architecture has not been run.
 
 ![Validation loss against stored weights](chart.png)
 
@@ -134,7 +143,7 @@ hand in the ledger; statuses are computed.
 |---|---|---|---|---|
 | 1 | low-rank-correction | A shared bank plus a low-rank correction per module beats plain sharing at equal stored weights: one chunk per bank with a rank-24 correction in each of the 8 modules reaches a lower loss than the fixed map with two chunks, which stores 2,304 more weights (0.1%). | `32000/both-c1-r24` below `32000/both-c2`: +0.0094, +0.0081, +0.0023 | **refuted** |
 | 2 | reuse-survives-the-modern-architecture | The gain from reuse survives the modern architecture: with rotary positions, root-mean-square norms and a gated feed-forward, eight modules reusing four chunks still beat the plain model of four modules. | `32000/both-modern` below `32000/plain-l4-modern`: -0.0425, -0.0422, -0.0326 | **supported** |
-| 2 | sharing-beats-a-narrowed-modern-model | In the modern architecture the shared model beats a plain model of equal stored weights that keeps all eight modules: eight modules reusing four chunks through the fixed map reach a lower loss than the plain model narrowed to width 184, the width nearest in stored weights that the model can build, which stores 70,088 more weights (2.1%). | `32000/both-modern` below `32000/plain-w184-modern`: -0.0115, -0.0097, -0.0152 | **supported** |
+| 2 | sharing-beats-a-narrowed-modern-model | In the modern architecture the shared model beats a plain model that keeps all eight modules and stores no fewer weights: eight modules reusing four chunks through the fixed map reach a lower loss than the plain model narrowed to width 184, the width nearest to the shared model's stored weights among multiples of 8, which stores 70,088 more weights (2.1%). | `32000/both-modern` below `32000/plain-w184-modern`: -0.0115, -0.0097, -0.0152 | **supported** |
 | 3 | picking-lock-in | A per-input pick loses to the fixed map because routers lock in early, near-random picks: with each module frozen to its router's most common pick after a quarter of training, the model still loses to the fixed map of module i to chunk i mod N. | `32000/both` below `32000/both-frozen-picks`: not run | **open** |
 | 3 | picking-chase | A per-input pick loses because chunks and router chase each other: holding the router's weights still after a quarter of training beats letting it learn throughout. | `32000/both-stopped-router` below `32000/both-routed`: not run | **open** |
 | 3 | picking-worse-function | A per-input pick loses because mixing chunks token by token is a worse function than one chunk per module, even under a router that no longer moves: frozen picks beat a stopped router. | `32000/both-frozen-picks` below `32000/both-stopped-router`: not run | **open** |
@@ -204,7 +213,7 @@ sharing-beats-a-narrowed-modern-model (priority 2) is the highest-priority open 
 
 8 runs, 5.7 GPU-hours of training against an estimate of 4.6; ledger rows written: `32000/plain-w184-modern`, `8000/plain-w184-modern`.
 
-In plain words: in a transformer built the way current ones are, eight modules sharing four chunks by a fixed map beat the plain model that keeps all eight modules and is narrowed to the same stored weights, by 0.0121 and at every seed. Width 184 is the nearest width the model builds (widths go in steps of 8) and stores 70,088 more weights than the shared model (2.1%), so the plain side is the larger and the gain at exactly equal stored weights is no smaller; width 176 would store 6.4% fewer. This is the stronger of the two plain controls: round 2's margin over the plain model of four modules was 0.0391, and the narrowed control is 0.0270 below that one, which leaves 0.0121. The plain model of four modules reads 0.0083 worse in the modern architecture than in the classic one (1.0403 against 1.0320), while the shared model reads 0.0122 better (1.0012 against 1.0134) and the narrowed model 0.0081 better than the classic narrower curve at its stored weights (1.0133 against 1.0214). So the modern plain model reads worse only as four modules at full width; no run isolates why. In the classic architecture the shared model is 0.0080 below the narrower curve at equal stored weights. What the round does not show: a modern plain curve (the control is one width, 2.1% larger, not an interpolation); another size, bank size, budget or dataset; a per-token pick in the modern architecture; and compute, which is not held equal: the shared model runs eight modules at width 256, about twice the arithmetic per token of the narrowed model. The long budget moved the narrowed model's best rate from 0.002 to 0.001, by 0.0003, so the rate sweep added a run at 0.0005; that run is 1.0 of the 1.1 GPU-hours over the estimate, and the rest is pace, 111 ms a step against the 108 the estimate used.
+In plain words: in a transformer built the way current ones are, eight modules sharing four chunks by a fixed map beat the plain model that keeps all eight modules and is narrowed to about the same stored weights, by 0.0121 on average and at every seed. Width 184 is the nearest width (a width is a multiple of 8, so that each of four heads rotates its dimensions in pairs) and stores 70,088 more weights than the shared model (2.1%), so the plain side is the larger; width 176 would store 6.4% fewer. If a modern plain model gains from width as the classic ones do, the margin at exactly equal stored weights is a little larger, which no second modern width has been run to show. This is the stronger of the two plain controls: round 2's margin over the plain model of four modules was 0.0391, and the narrowed control is 0.0270 below that one, which leaves 0.0121. The plain model of four modules reads 0.0083 worse in the modern architecture than in the classic one (1.0403 against 1.0320), while the shared model reads 0.0122 better (1.0012 against 1.0134) and the narrowed model 0.0081 better than the classic narrower curve at its stored weights (1.0133 against 1.0214). So of the two modern plain cells run, one reads worse than its classic counterpart and one better; no run isolates why. In the classic architecture the shared model is 0.0080 below the narrower curve at equal stored weights. What the round does not show: a modern plain curve (the control is one width, 2.1% larger, not an interpolation); another mix of depth and width at that storage; another size, bank size, budget or dataset; a per-token pick in the modern architecture; and compute, which is not held equal: the shared model runs eight modules at width 256, which multiply by about 1.9 times the weights per token of the narrowed model, though a training step took the same time for both, about 110 ms. The long budget moved the narrowed model's best rate from 0.002 to 0.001, by 0.0003 in loss, so the rate sweep added a run at 0.0005; that run is 1.0 of the 1.1 GPU-hours over the estimate, and the rest is pace, 111 ms a step against the 108 of the tried cell the estimate priced it from.
 
 ### The modern cells beside the classic architecture
 
@@ -213,7 +222,8 @@ same cell in the classic architecture where that cell has runs. A plain model na
 width alone that has no classic twin is set beside the classic narrower plain curve read at
 its stored weights, interpolated seed by seed as the gaps below are. One cell does not store
 the same weights in both architectures: the modern one has no position table, its norms have
-no bias, and its feed-forward hidden width is rounded.
+no bias, and its feed-forward hidden width is rounded down. Each cell is at its own chosen
+learning rate.
 
 | cell | stored weights | mean loss | classic counterpart | its stored weights | its mean loss | cell minus classic, by seed | mean |
 |---|---|---|---|---|---|---|---|
@@ -221,15 +231,15 @@ no bias, and its feed-forward hidden width is rounded.
 | `32000/plain-l4-modern` | 3,287,888 | 1.0403 | `32000/plain-l4` | 3,356,416 | 1.0320 | +0.0097, +0.0132, +0.0020 | +0.0083 |
 | `32000/plain-w184-modern` | 3,360,024 | 1.0133 | the narrower plain curve, read at the same stored weights | 3,360,024 | 1.0214 | -0.0097, -0.0088, -0.0058 | -0.0081 |
 
-The modern architecture lowers the loss of the shared model by 0.012 and of the narrowed
-plain model by 0.008, and raises the loss of the plain model of four modules by 0.008. That
-cell is above its classic twin at every seed, by 0.002 to 0.013, and its seeds spread 0.007,
-the widest of the three modern cells. The two plain cells differ in depth and width at once
-(four modules at width 256, eight at width 184), and no run varies one without the other or
-changes one part of the modern design at a time, so the table shows where the modern plain
-model reads worse and not why. What it settles is the size of the gain from sharing: the
-shared model's margin over the plain model of four modules, 0.039, is three times its margin
-over the narrowed one, 0.012.
+In the modern architecture the shared model reads 0.012 lower than its classic counterpart
+and the narrowed plain model 0.008 lower, while the plain model of four modules reads 0.008
+higher. That cell is above its classic twin at every seed, by 0.002 to 0.013, and its seeds
+have a standard deviation of 0.007, the widest of the three modern cells. The two plain
+cells differ in depth and width at once (four modules at width 256, eight at width 184), and
+no run varies one without the other or changes one part of the modern design at a time, so
+the table shows where the modern plain model reads worse and not why. What it changes is the
+size of the gain from sharing: the shared model's margin over the plain model of four
+modules, 0.039, is about three times its margin over the narrowed one, 0.012.
 
 ### Every cell
 

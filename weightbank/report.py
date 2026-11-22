@@ -14,6 +14,7 @@ from matplotlib.axes import Axes
 from matplotlib.transforms import ScaledTranslation
 
 from weightbank.configs import (
+    ARCHITECTURE,
     FIXED_MAP,
     FULL,
     KEYS,
@@ -48,7 +49,6 @@ from weightbank.train import LOG_WINDOWS, RUNS, PickStats, Plan, Run
 ARMS = tuple(name for name in ROUNDS_ONE_AND_TWO if name != OWN_CHUNK)
 RATE_FROM = {OWN_CHUNK: FULL}
 
-ARCHITECTURE = "architecture"
 TEMPLATE = Path("report.in.md")
 REPORT = Path("report.md")
 CHART = Path("chart.png")
@@ -73,7 +73,7 @@ DODGE = {NO_ROUTER: -9, "both-routed": 0, NOISE_FREE: 9, KEYS: 18}
 MARKERS = {"ff-routed": "D", "attn-routed": "D", "both-routed": "D", NOISE_FREE: "^", KEYS: "v"}
 assert COLORS.keys() == MARKERS.keys() == set(PICKING)
 LATER_DODGE = 9
-LATER_COLORS = ("#e6ab02", "#a6761d", "#66a61e", "#b3261e", "#1f3a8a", "#0e9aa7", "#7a3b8f", "#52514e")
+LATER_COLORS = ("#e6ab02", "#a6761d", "#66a61e", "#b3261e", "#1f3a8a", "#0e9aa7", "#7a3b8f")
 LEGEND_COLUMNS = 2
 
 
@@ -105,7 +105,7 @@ class Summary:
         return stdev(self.losses)
 
 
-def covers(curve: Sequence[tuple[int, float]], stored: int) -> bool:
+def covers(curve: Sequence[tuple[int, object]], stored: int) -> bool:
     return curve[0][0] <= stored <= curve[-1][0]
 
 
@@ -115,6 +115,10 @@ def interpolate(curve: Sequence[tuple[int, float]], stored: int) -> float:
             share = (math.log(stored) - math.log(low)) / (math.log(high) - math.log(low))
             return low_loss + share * (high_loss - low_loss)
     raise ValueError(f"{stored} stored weights lie outside the plain curve")
+
+
+def by_seed(curve: Sequence[tuple[int, Sequence[float]]], stored: int) -> list[float]:
+    return [interpolate([(size, losses[seed]) for size, losses in curve], stored) for seed in range(len(curve[0][1]))]
 
 
 def means(curve: Sequence[Summary]) -> list[tuple[int, float]]:
@@ -150,10 +154,8 @@ class Budget:
 
     def gaps(self, name: str, curve: str) -> list[float]:
         summary = self.summaries[name]
-        return [
-            loss - interpolate([(plain.stored, plain.losses[seed]) for plain in self.curves()[curve]], summary.stored)
-            for seed, loss in enumerate(summary.losses)
-        ]
+        reads = by_seed([(plain.stored, plain.losses) for plain in self.curves()[curve]], summary.stored)
+        return [loss - read for loss, read in zip(summary.losses, reads, strict=True)]
 
     def gap(self, name: str) -> float:
         return fmean(self.gaps(name, self.better(name)))
@@ -633,53 +635,58 @@ def later_cells(ledger: Ledger, steps: int) -> list[Row]:
     ]
 
 
-def classic_counterpart(ledger: Ledger, budget: Budget, row: Row) -> tuple[str, int, list[float]] | None:
-    architecture = ledger.axis(ARCHITECTURE)
-    twin = ledger.row({**row.cell, ARCHITECTURE: architecture.default})
+@dataclass(frozen=True)
+class Counterpart:
+    words: str
+    stored: int
+    losses: list[float]
+
+
+def classic_counterpart(ledger: Ledger, row: Row) -> Counterpart | None:
+    twin = ledger.row({**row.cell, ARCHITECTURE: ledger.axis(ARCHITECTURE).default})
     if twin is not None and twin.losses is not None:
-        return f"`{ledger.key(twin.cell)}`", twin.stored_weights, twin.losses
-    narrowed = ledger.sparse(row.cell).keys() <= {ARCHITECTURE, "width", STEPS}
-    if narrowed and covers(means(budget.narrower), row.stored_weights):
-        by_seed = [
-            interpolate([(plain.stored, plain.losses[seed]) for plain in budget.narrower], row.stored_weights)
-            for seed in range(len(SEEDS))
-        ]
-        return "the narrower plain curve, read at the same stored weights", row.stored_weights, by_seed
+        return Counterpart(f"`{ledger.key(twin.cell)}`", twin.stored_weights, twin.losses)
+    steps = row.cell[STEPS]
+    assert isinstance(steps, int)
+    plain = [ledger.row(ledger.parse(name, steps)) for name in (*NARROWER, FULL)]
+    curve = [(narrower.stored_weights, narrower.losses) for narrower in plain if narrower is not None and narrower.losses is not None]
+    width_alone = ledger.sparse(row.cell).keys() <= {ARCHITECTURE, "width", STEPS}
+    if width_alone and curve and covers(curve, row.stored_weights):
+        return Counterpart("the narrower plain curve, read at the same stored weights", row.stored_weights, by_seed(curve, row.stored_weights))
     return None
 
 
-def architectures_table(ledger: Ledger, budget: Budget) -> str:
-    architecture = ledger.axis(ARCHITECTURE)
+def beside_classic_table(ledger: Ledger, steps: int) -> str:
+    classic = ledger.axis(ARCHITECTURE).default
     rows = []
-    for row in later_cells(ledger, budget.steps):
-        counterpart = None if row.cell[ARCHITECTURE] == architecture.default else classic_counterpart(ledger, budget, row)
-        if counterpart is None:
+    for row in later_cells(ledger, steps):
+        if row.cell[ARCHITECTURE] == classic:
             continue
         losses = row.losses
         assert losses is not None
-        against, stored, theirs = counterpart
-        differences = [ours - classic for ours, classic in zip(losses, theirs)]
-        rows.append(
-            [
-                f"`{ledger.key(row.cell)}`",
-                f"{row.stored_weights:,}",
-                f"{fmean(losses):.4f}",
-                against,
-                f"{stored:,}",
-                f"{fmean(theirs):.4f}",
+        cells = [f"`{ledger.key(row.cell)}`", f"{row.stored_weights:,}", f"{fmean(losses):.4f}"]
+        counterpart = classic_counterpart(ledger, row)
+        if counterpart is None:
+            cells += ["none with runs", "", "", "", ""]
+        else:
+            differences = [ours - theirs for ours, theirs in zip(losses, counterpart.losses, strict=True)]
+            cells += [
+                counterpart.words,
+                f"{counterpart.stored:,}",
+                f"{fmean(counterpart.losses):.4f}",
                 ", ".join(f"{difference:+.4f}" for difference in differences),
                 f"{fmean(differences):+.4f}",
             ]
-        )
+        rows.append(cells)
     return table(
         [
             "cell",
             "stored weights",
             "mean loss",
-            f"{architecture.default} counterpart",
+            f"{classic} counterpart",
             "its stored weights",
             "its mean loss",
-            f"cell minus {architecture.default}, by seed",
+            f"cell minus {classic}, by seed",
             "mean",
         ],
         rows,
@@ -743,7 +750,7 @@ def panel(axes: Axes, budget: Budget, later: Sequence[Row], ledger: Ledger, low:
             zorder=4,
         )
     for index, row in enumerate(later):
-        shade = LATER_COLORS[index % len(LATER_COLORS)]
+        shade = LATER_COLORS[index]
         losses = row.losses
         assert losses is not None
         mean = fmean(losses)
@@ -787,9 +794,11 @@ def panel(axes: Axes, budget: Budget, later: Sequence[Row], ledger: Ledger, low:
 
 def chart(budget: Budget, ledger: Ledger) -> None:
     later = later_cells(ledger, budget.steps)
+    if len(later) > len(LATER_COLORS):
+        raise ValueError(f"{len(later)} later cells and {len(LATER_COLORS)} colours to tell them apart")
     figure, (whole, detail) = plt.subplots(1, 2, figsize=(13, 6.4), dpi=160, facecolor=SURFACE, width_ratios=(1, 1.25))
     panel(whole, budget, later, ledger, 0.85, 7.4, annotate=True)
-    panel(detail, budget, later, ledger, 3.1, 7.0, annotate=True)
+    panel(detail, budget, later, ledger, 3.0, 7.0, annotate=True)
     for axes in (whole, detail):
         axes.set_ylabel("validation loss (nats per byte)", color=MUTED)
     whole.set_title("every size", color=MUTED, fontsize=10, loc="left")
@@ -802,19 +811,20 @@ def chart(budget: Budget, ledger: Ledger) -> None:
         ha="left",
     )
     handles, labels = whole.get_legend_handles_labels()
-    classic, modern = ledger.axis(ARCHITECTURE).words.values()
-    figure.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.025), ncol=LEGEND_COLUMNS, frameon=False, labelcolor=INK, fontsize=10)
+    architecture = ledger.axis(ARCHITECTURE)
+    figure.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.05), ncol=LEGEND_COLUMNS, frameon=False, labelcolor=INK, fontsize=10)
     figure.text(
         0.5,
-        0.005,
+        0.008,
         "The fixed map at 4 chunks and the three points with both kinds picked per token store the same weights to within 1.2% and are drawn side by side;"
         " a star is drawn just right of its stored weights.\n"
-        f"Lines and every point whose label names no architecture are the {classic}; stars of the {modern} are compared with one another.",
+        f"Lines and every point whose label names no architecture are the {architecture.words[architecture.default]};"
+        " stars that name another architecture are compared with one another.",
         color=MUTED,
         fontsize=9,
         ha="center",
     )
-    figure.tight_layout(rect=(0, 0.05 + 0.03 * math.ceil(len(handles) / LEGEND_COLUMNS), 1, 0.96))
+    figure.tight_layout(rect=(0, 0.075 + 0.03 * math.ceil(len(handles) / LEGEND_COLUMNS), 1, 0.96))
     figure.savefig(CHART, facecolor=SURFACE)
 
 
@@ -832,7 +842,7 @@ def main() -> None:
         "hypotheses": hypotheses_table(ledger),
         "rounds": rounds_text(ledger),
         "cells": cells_table(ledger),
-        "architectures": architectures_table(ledger, long),
+        "beside-classic": beside_classic_table(ledger, LONG_STEPS),
         "both-budgets": both_budgets_table(first, long),
         "rate-alone": rate_alone_table(
             first,

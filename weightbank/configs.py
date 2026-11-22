@@ -12,6 +12,7 @@ SHARED = "shared"
 PICK = "pick"
 CHUNKS = "chunks"
 RANK = "rank"
+ARCHITECTURE = "architecture"
 SHARING_AXES = (SHARED, PICK, CHUNKS)
 KINDS = {"none": (), "ff": ("feed_forward",), "attn": ("attention",), "both": ("feed_forward", "attention")}
 PICKS: dict[str, Callable[[int], Sharing]] = {

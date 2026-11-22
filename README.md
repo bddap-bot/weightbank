@@ -29,13 +29,14 @@ weights. It does not: 1.065 nats per byte against 1.058 at 32,000 steps, above a
 three seeds. The correction does recover nine tenths of what the second chunk buys over one
 chunk alone (1.118).
 
-The second and third rounds asked whether the gain from sharing without a router survives a
-modern transformer (rotary positions, root-mean-square norms, a gated feed-forward). It
-does, against both plain controls of equal stored weights at 32,000 steps: eight modules
-sharing four chunks through the fixed map reach 1.001 nats per byte, four modules that own
-the same four chunks reach 1.040, and eight modules narrowed to width 184, which stores
-2.1% more weights than the shared model, reach 1.013, above the shared model at all three
-seeds. The shared model runs about twice the compute per token of either plain model.
+The second and third rounds took sharing without a router into a modern transformer
+(rotary positions, root-mean-square norms, a gated feed-forward) and set it against two
+plain models at 32,000 steps. Eight modules sharing four chunks through the fixed map reach
+1.001 nats per byte of validation loss. Four modules that own the same four chunks reach
+1.040. Eight modules narrowed to width 184, the nearest buildable width, store 2.1% more
+weights than the shared model and reach 1.013, above it at all three seeds. Stored weights
+are held equal and compute is not: the shared model multiplies by about twice the weights
+per token of either plain model.
 
 The full write-up, with every run, is in [report.md](report.md).
 
