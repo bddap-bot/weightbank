@@ -651,7 +651,7 @@ def classic_counterpart(ledger: Ledger, row: Row) -> Counterpart | None:
     plain = [ledger.row(ledger.parse(name, steps)) for name in (*NARROWER, FULL)]
     curve = [(narrower.stored_weights, narrower.losses) for narrower in plain if narrower is not None and narrower.losses is not None]
     width_alone = ledger.sparse(row.cell).keys() <= {ARCHITECTURE, "width", STEPS}
-    if width_alone and curve and covers(curve, row.stored_weights):
+    if width_alone and len(curve) == len(plain) and covers(curve, row.stored_weights):
         return Counterpart("the narrower plain curve, read at the same stored weights", row.stored_weights, by_seed(curve, row.stored_weights))
     return None
 

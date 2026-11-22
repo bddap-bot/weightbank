@@ -75,6 +75,11 @@ def test_a_narrowed_cell_outside_the_plain_curve_has_no_counterpart() -> None:
     assert report.classic_counterpart(ledger, Row(narrowed.cell, smallest.stored_weights - 1, narrowed.runs)) is None
 
 
+def test_a_plain_curve_with_a_width_missing_is_not_read_across_the_hole() -> None:
+    ledger = ledger_without(ABOVE)
+    assert report.classic_counterpart(ledger, row(ledger, modern(NARROWED))) is None
+
+
 def test_the_table_beside_classic_has_one_row_per_modern_cell_and_none_for_a_classic_one() -> None:
     ledger = Ledger.read()
     lines = report.beside_classic_table(ledger, LONG_STEPS).splitlines()[2:]

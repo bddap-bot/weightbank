@@ -35,7 +35,7 @@ plain models at 32,000 steps. Eight modules sharing four chunks through the fixe
 1.001 nats per byte of validation loss. Four modules that own the same four chunks reach
 1.040. Eight modules narrowed to width 184, the nearest buildable width, store 2.1% more
 weights than the shared model and reach 1.013, above it at all three seeds. Stored weights
-are held equal and compute is not: the shared model multiplies by about twice the weights
+are held nearly equal and compute is not: the shared model multiplies by about twice the weights
 per token of either plain model.
 
 The full write-up, with every run, is in [report.md](report.md).

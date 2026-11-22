@@ -48,9 +48,10 @@ pairs. Width 184 stores 2.1% more weights than the shared model and width 176 wo
 model gains from width as the classic ones do, the margin at exactly equal stored weights is
 a little above 0.012: on the classic narrower curve 2.1% of stored weights is worth 0.002.
 No second modern width has been run to show that. In the classic architecture the shared
-model of the same shape is 0.008 below the narrower plain curve at equal stored weights. The
-two margins, 0.012 and 0.008, differ by about one seed standard deviation, so sharing gains
-about as much in the modern design as in the classic one.
+model of the same shape is 0.008 below the narrower plain curve at equal stored weights. So
+the gain did not shrink in the modern design: 0.012 over a larger plain model, against 0.008
+at equal stored weights in the classic one. One comparison in each architecture does not say
+by how much the two gains differ.
 
 That is the result nearest to something to adopt: in this small byte-level transformer with
 the modern parts, a model limited by stored weights reaches a lower loss as eight modules
@@ -60,8 +61,9 @@ two controls. The modern plain model of four modules reads 0.008 worse than the 
 the classic architecture, while the modern shared model and the modern narrowed model read
 better than their classic counterparts, by 0.012 and 0.008 (the table under "The modern
 cells beside the classic architecture"). Of the two modern plain cells run, then, one reads
-worse than its classic counterpart and one reads better, so the plain model reading worse is
-not general to modern plain models here. No run isolates why the cell of four modules reads
+worse than its classic counterpart and one reads better, the second against an interpolated
+classic curve and not a run of its own width, so the plain model reading worse is not
+general to modern plain models here. No run isolates why the cell of four modules reads
 worse, and no cause is claimed. Against the control that does not read worse the margin is
 0.012, under a third of 0.039.
 
@@ -71,7 +73,7 @@ modern plain control is one width and one depth: it is 2.1% larger than the shar
 instead of an interpolation between two widths, and no other mix of depth and width at that
 storage, such as six narrower modules, has been run in the modern architecture. Learning
 rates are chosen on seed 0, and the narrowed model's two best rates end 0.0003 apart in
-loss. Stored weights are held equal and compute is not: the shared model runs eight modules
+loss. Stored weights are held nearly equal and compute is not: the shared model runs eight modules
 at width 256, which multiply by about 1.9 times the weights per token of eight modules at
 width 184 and twice those of four modules at width 256. On this GPU a training step of the
 shared model and of the narrowed one took the same time, about 110 ms. Whether a per-token
