@@ -57,6 +57,7 @@
     [96, "plain-w96", "width 96"],
     [128, "plain-w128", "width 128"],
     [160, "plain-w160", "width 160"],
+    [184, "plain-w184", "width 184"],
     [192, "plain-w192", "width 192"],
     [224, "plain-w224", "width 224"],
     [256, "plain-w256", "width 256"]
@@ -103,6 +104,18 @@
      "lower": {"shared": "both", "steps": 32000, "architecture": "modern"},
      "higher": {"modules": 4, "steps": 32000, "architecture": "modern"},
      "differences": [-0.0425, -0.0422, -0.0326]
+    }
+   ]
+  },
+  {
+   "id": "sharing-beats-a-narrowed-modern-model",
+   "priority": 2,
+   "status": "open",
+   "statement": "In the modern architecture the shared model beats a plain model of equal stored weights that keeps all eight modules: eight modules reusing four chunks through the fixed map reach a lower loss than the plain model narrowed to width 184, the width nearest in stored weights that the model can build, which stores 70,088 more weights (2.1%).",
+   "settle": [
+    {
+     "lower": {"shared": "both", "steps": 32000, "architecture": "modern"},
+     "higher": {"width": 184, "steps": 32000, "architecture": "modern"}
     }
    ]
   },
