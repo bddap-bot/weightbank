@@ -48,6 +48,7 @@ from weightbank.train import LOG_WINDOWS, RUNS, PickStats, Plan, Run
 ARMS = tuple(name for name in ROUNDS_ONE_AND_TWO if name != OWN_CHUNK)
 RATE_FROM = {OWN_CHUNK: FULL}
 
+ARCHITECTURE = "architecture"
 TEMPLATE = Path("report.in.md")
 REPORT = Path("report.md")
 CHART = Path("chart.png")
@@ -72,7 +73,7 @@ DODGE = {NO_ROUTER: -9, "both-routed": 0, NOISE_FREE: 9, KEYS: 18}
 MARKERS = {"ff-routed": "D", "attn-routed": "D", "both-routed": "D", NOISE_FREE: "^", KEYS: "v"}
 assert COLORS.keys() == MARKERS.keys() == set(PICKING)
 LATER_DODGE = 9
-LATER_SHADES = (5, 6, 4, 7, 0, 1, 2, 3)
+LATER_COLORS = ("#e6ab02", "#a6761d", "#66a61e", "#b3261e", "#1f3a8a", "#0e9aa7", "#7a3b8f", "#52514e")
 LEGEND_COLUMNS = 2
 
 
@@ -632,6 +633,59 @@ def later_cells(ledger: Ledger, steps: int) -> list[Row]:
     ]
 
 
+def classic_counterpart(ledger: Ledger, budget: Budget, row: Row) -> tuple[str, int, list[float]] | None:
+    architecture = ledger.axis(ARCHITECTURE)
+    twin = ledger.row({**row.cell, ARCHITECTURE: architecture.default})
+    if twin is not None and twin.losses is not None:
+        return f"`{ledger.key(twin.cell)}`", twin.stored_weights, twin.losses
+    narrowed = ledger.sparse(row.cell).keys() <= {ARCHITECTURE, "width", STEPS}
+    if narrowed and covers(means(budget.narrower), row.stored_weights):
+        by_seed = [
+            interpolate([(plain.stored, plain.losses[seed]) for plain in budget.narrower], row.stored_weights)
+            for seed in range(len(SEEDS))
+        ]
+        return "the narrower plain curve, read at the same stored weights", row.stored_weights, by_seed
+    return None
+
+
+def architectures_table(ledger: Ledger, budget: Budget) -> str:
+    architecture = ledger.axis(ARCHITECTURE)
+    rows = []
+    for row in later_cells(ledger, budget.steps):
+        counterpart = None if row.cell[ARCHITECTURE] == architecture.default else classic_counterpart(ledger, budget, row)
+        if counterpart is None:
+            continue
+        losses = row.losses
+        assert losses is not None
+        against, stored, theirs = counterpart
+        differences = [ours - classic for ours, classic in zip(losses, theirs)]
+        rows.append(
+            [
+                f"`{ledger.key(row.cell)}`",
+                f"{row.stored_weights:,}",
+                f"{fmean(losses):.4f}",
+                against,
+                f"{stored:,}",
+                f"{fmean(theirs):.4f}",
+                ", ".join(f"{difference:+.4f}" for difference in differences),
+                f"{fmean(differences):+.4f}",
+            ]
+        )
+    return table(
+        [
+            "cell",
+            "stored weights",
+            "mean loss",
+            f"{architecture.default} counterpart",
+            "its stored weights",
+            "its mean loss",
+            f"cell minus {architecture.default}, by seed",
+            "mean",
+        ],
+        rows,
+    )
+
+
 def panel(axes: Axes, budget: Budget, later: Sequence[Row], ledger: Ledger, low: float, high: float, annotate: bool) -> None:
     summaries = budget.summaries
     axes.set_facecolor(SURFACE)
@@ -689,7 +743,7 @@ def panel(axes: Axes, budget: Budget, later: Sequence[Row], ledger: Ledger, low:
             zorder=4,
         )
     for index, row in enumerate(later):
-        shade = matplotlib.colormaps["Dark2"](LATER_SHADES[index % len(LATER_SHADES)])
+        shade = LATER_COLORS[index % len(LATER_COLORS)]
         losses = row.losses
         assert losses is not None
         mean = fmean(losses)
@@ -699,7 +753,7 @@ def panel(axes: Axes, budget: Budget, later: Sequence[Row], ledger: Ledger, low:
             yerr=[[mean - min(losses)], [max(losses) - mean]],
             color=shade,
             marker="*",
-            markersize=11,
+            markersize=14,
             markeredgecolor=SURFACE,
             capsize=5,
             linewidth=1.5,
@@ -748,12 +802,14 @@ def chart(budget: Budget, ledger: Ledger) -> None:
         ha="left",
     )
     handles, labels = whole.get_legend_handles_labels()
+    classic, modern = ledger.axis(ARCHITECTURE).words.values()
     figure.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.025), ncol=LEGEND_COLUMNS, frameon=False, labelcolor=INK, fontsize=10)
     figure.text(
         0.5,
         0.005,
         "The fixed map at 4 chunks and the three points with both kinds picked per token store the same weights to within 1.2% and are drawn side by side;"
-        " a star is drawn just right of its stored weights.",
+        " a star is drawn just right of its stored weights.\n"
+        f"Lines and every point whose label names no architecture are the {classic}; stars of the {modern} are compared with one another.",
         color=MUTED,
         fontsize=9,
         ha="center",
@@ -776,6 +832,7 @@ def main() -> None:
         "hypotheses": hypotheses_table(ledger),
         "rounds": rounds_text(ledger),
         "cells": cells_table(ledger),
+        "architectures": architectures_table(ledger, long),
         "both-budgets": both_budgets_table(first, long),
         "rate-alone": rate_alone_table(
             first,

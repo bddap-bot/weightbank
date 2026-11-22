@@ -110,12 +110,13 @@
   {
    "id": "sharing-beats-a-narrowed-modern-model",
    "priority": 2,
-   "status": "open",
+   "status": "supported",
    "statement": "In the modern architecture the shared model beats a plain model of equal stored weights that keeps all eight modules: eight modules reusing four chunks through the fixed map reach a lower loss than the plain model narrowed to width 184, the width nearest in stored weights that the model can build, which stores 70,088 more weights (2.1%).",
    "settle": [
     {
      "lower": {"shared": "both", "steps": 32000, "architecture": "modern"},
-     "higher": {"width": 184, "steps": 32000, "architecture": "modern"}
+     "higher": {"width": 184, "steps": 32000, "architecture": "modern"},
+     "differences": [-0.0115, -0.0097, -0.0152]
     }
    ]
   },
@@ -276,6 +277,30 @@
    "differences": [-0.0425, -0.0422, -0.0326],
    "reading": "32000/both-modern reached 1.0012 nats per byte with 3,289,936 stored weights at rate 0.002; 32000/plain-l4-modern reached 1.0403 with 3,287,888 at rate 0.001. Lower minus higher by seed: -0.0425, -0.0422, -0.0326. reuse-survives-the-modern-architecture went from open to supported.",
    "note": "In plain words: in a transformer built the way current ones are, eight modules that reuse four chunks by a fixed map beat four modules that own the same four chunks, at stored weights 2,048 apart (0.06%) and at every seed. The gain is 0.0391, where the same pair in the classic architecture gains 0.0186 (1.0134 against 1.0320), so the benefit of reuse does not come from the older design. What the round does not show: whether the shared model beats a modern model narrowed to the same stored weights, the better plain control in the classic architecture, which has no modern runs; whether a per-token pick fares differently in the modern architecture; and anything at another size or on other data. The modern cells trained at about twice the seconds per step of the fastest classic runs of the same shape, which the estimate, priced from classic cells, did not foresee; one more run in the rate sweep of the plain model accounts for the rest of the 7.4 GPU-hours."
+  },
+  {
+   "hypothesis": "sharing-beats-a-narrowed-modern-model",
+   "lower": {"shared": "both", "steps": 32000, "architecture": "modern"},
+   "higher": {"width": 184, "steps": 32000, "architecture": "modern"},
+   "budget_gpu_hours": 12.0,
+   "estimated_gpu_hours": 4.6,
+   "why": "sharing-beats-a-narrowed-modern-model (priority 2) is the highest-priority open hypothesis with an unfinished comparison that fits 12 GPU-hours; the cheapest is 32000/both-modern against 32000/plain-w184-modern, estimated at 4.6 GPU-hours.",
+   "runs": [
+    "runs/32000/plain-w184-modern-lr0.0005-s0.json",
+    "runs/32000/plain-w184-modern-lr0.001-s0.json",
+    "runs/32000/plain-w184-modern-lr0.001-s1.json",
+    "runs/32000/plain-w184-modern-lr0.001-s2.json",
+    "runs/32000/plain-w184-modern-lr0.002-s0.json",
+    "runs/8000/plain-w184-modern-lr0.0005-s0.json",
+    "runs/8000/plain-w184-modern-lr0.001-s0.json",
+    "runs/8000/plain-w184-modern-lr0.002-s0.json"
+   ],
+   "rows": ["32000/plain-w184-modern", "8000/plain-w184-modern"],
+   "gpu_hours": 5.7,
+   "statuses": {"sharing-beats-a-narrowed-modern-model": ["open", "supported"]},
+   "differences": [-0.0115, -0.0097, -0.0152],
+   "reading": "32000/both-modern reached 1.0012 nats per byte with 3,289,936 stored weights at rate 0.002; 32000/plain-w184-modern reached 1.0133 with 3,360,024 at rate 0.001. Lower minus higher by seed: -0.0115, -0.0097, -0.0152. sharing-beats-a-narrowed-modern-model went from open to supported.",
+   "note": "In plain words: in a transformer built the way current ones are, eight modules sharing four chunks by a fixed map beat the plain model that keeps all eight modules and is narrowed to the same stored weights, by 0.0121 and at every seed. Width 184 is the nearest width the model builds (widths go in steps of 8) and stores 70,088 more weights than the shared model (2.1%), so the plain side is the larger and the gain at exactly equal stored weights is no smaller; width 176 would store 6.4% fewer. This is the stronger of the two plain controls: round 2's margin over the plain model of four modules was 0.0391, and the narrowed control is 0.0270 below that one, which leaves 0.0121. The plain model of four modules reads 0.0083 worse in the modern architecture than in the classic one (1.0403 against 1.0320), while the shared model reads 0.0122 better (1.0012 against 1.0134) and the narrowed model 0.0081 better than the classic narrower curve at its stored weights (1.0133 against 1.0214). So the modern plain model reads worse only as four modules at full width; no run isolates why. In the classic architecture the shared model is 0.0080 below the narrower curve at equal stored weights. What the round does not show: a modern plain curve (the control is one width, 2.1% larger, not an interpolation); another size, bank size, budget or dataset; a per-token pick in the modern architecture; and compute, which is not held equal: the shared model runs eight modules at width 256, about twice the arithmetic per token of the narrowed model. The long budget moved the narrowed model's best rate from 0.002 to 0.001, by 0.0003, so the rate sweep added a run at 0.0005; that run is 1.0 of the 1.1 GPU-hours over the estimate, and the rest is pace, 111 ms a step against the 108 the estimate used."
   }
  ],
  "cells": [
@@ -866,6 +891,50 @@
      "seed": 0,
      "loss": 1.0499,
      "seconds": 1303
+    }
+   ]
+  },
+  {
+   "cell": {"width": 184, "steps": 32000, "architecture": "modern"},
+   "stored_weights": 3360024,
+   "rate": 0.001,
+   "loss": 1.0133,
+   "seed_sd": 0.0026,
+   "runs": [
+    {
+     "file": "runs/32000/plain-w184-modern-lr0.0005-s0.json",
+     "rate": 0.0005,
+     "seed": 0,
+     "loss": 1.0167,
+     "seconds": 3504
+    },
+    {
+     "file": "runs/32000/plain-w184-modern-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.0104,
+     "seconds": 3496
+    },
+    {
+     "file": "runs/32000/plain-w184-modern-lr0.001-s1.json",
+     "rate": 0.001,
+     "seed": 1,
+     "loss": 1.0141,
+     "seconds": 3534
+    },
+    {
+     "file": "runs/32000/plain-w184-modern-lr0.001-s2.json",
+     "rate": 0.001,
+     "seed": 2,
+     "loss": 1.0155,
+     "seconds": 3618
+    },
+    {
+     "file": "runs/32000/plain-w184-modern-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.0107,
+     "seconds": 3598
     }
    ]
   },
@@ -1492,6 +1561,33 @@
      "seed": 0,
      "loss": 1.1185,
      "seconds": 272
+    }
+   ]
+  },
+  {
+   "cell": {"width": 184, "steps": 8000, "architecture": "modern"},
+   "stored_weights": 3360024,
+   "runs": [
+    {
+     "file": "runs/8000/plain-w184-modern-lr0.0005-s0.json",
+     "rate": 0.0005,
+     "seed": 0,
+     "loss": 1.1035,
+     "seconds": 871
+    },
+    {
+     "file": "runs/8000/plain-w184-modern-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.0828,
+     "seconds": 873
+    },
+    {
+     "file": "runs/8000/plain-w184-modern-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.082,
+     "seconds": 872
     }
    ]
   },

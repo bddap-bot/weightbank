@@ -30,16 +30,43 @@ choosing a chunk per token costs loss against a plain model and against fixed sh
 same weights, and fixed sharing is the only arrangement here that beats a plain model of
 equal storage.
 
-The loop described below has since run two rounds at the long budget; the cells they
-tried are the stars on the chart. A low-rank correction per module on one shared chunk does not beat a second chunk at
-equal stored weights. And the gain from reuse holds in a modern transformer (rotary
-positions, root-mean-square norms, a gated feed-forward): eight modules reusing four chunks
-through the fixed map reach 1.0012 where four modules that own the same four chunks reach
-1.0403, a gain of 0.039 against 0.019 for the same pair in the classic architecture. That
-is the result nearest to something to adopt: a model limited by stored weights does better
-running its chunks twice than once. It is one dataset, one size and one comparison; the
-modern model narrowed to the same stored weights, the stronger plain control in the classic
-architecture, has not been run.
+The loop described below has since run three rounds at the long budget; the cells they
+tried are the stars on the chart. A low-rank correction per module on one shared chunk does
+not beat a second chunk at equal stored weights. The gain from sharing holds in a modern
+transformer (rotary positions, root-mean-square norms, a gated feed-forward), against both
+plain controls. Eight modules reusing four chunks through the fixed map reach 1.0012. Four
+modules that own the same four chunks reach 1.0403, which is 0.039 above. The stronger
+control keeps all eight modules and is narrowed to the same stored weights: at width 184 it
+reaches 1.0133, so the shared model is 0.012 below it, at every seed (0.012, 0.010 and
+0.015; the seeds of each model spread 0.003). Equal stored weights is reached with one width.
+The model builds widths in steps of 8 (four heads, rotary pairs in each), and 184 is the
+nearest to the shared model: it stores 2.1% more weights, where 176 would store 6.4% fewer.
+The plain side therefore has the larger model, and at exactly equal stored weights the gain
+would be no smaller than 0.012; on the classic narrower curve 2.1% of stored weights is worth
+0.002. In the classic architecture the same shared model is 0.008 below the narrower plain
+curve at equal stored weights, so sharing gains at least as much in the modern design as in
+the classic one.
+
+That is the result nearest to something to adopt: in a transformer of the kind in current
+use, a model limited by stored weights reaches a lower loss as eight modules sharing four
+chunks than as a plain model of the same storage, whether that plain model is made shallow
+or narrow. Round 2's 0.039 overstated the size. The modern plain model of four modules reads
+0.008 worse than the same model in the classic architecture, while the modern shared model
+and the modern narrowed model each read better than their classic counterparts, by 0.012
+and 0.008 (the table under "The modern cells beside the classic architecture"). The plain
+model reading worse in the modern architecture is therefore a property of the cell with four
+modules at full width and not of modern plain models in general, and against a control the
+modern architecture does not handicap the gain is 0.012, under a third of 0.039. No run
+isolates why that one cell reads worse, and no cause is claimed.
+
+What this does not show. It is one dataset of bytes, one size (3.3 million stored weights),
+one bank size (four chunks for eight modules) and one training budget. The modern plain
+control is one width and not a curve, so the comparison at equal stored weights rests on a
+plain model 2.1% larger, not on an interpolation. Learning rates are chosen on one seed, and
+the narrowed model's two best rates are 0.0003 apart. The comparison holds stored weights
+equal and not compute: the shared model runs eight modules at width 256, about twice the
+arithmetic per token of eight modules at width 184 or of four at width 256. Whether a
+per-token pick fares differently in the modern architecture has not been run.
 
 ![Validation loss against stored weights](chart.png)
 
@@ -53,8 +80,9 @@ are drawn side by side so that none hides another, which the chart notes under i
 Points are means of three seeds. A star is a cell with three seeds at this budget beyond
 those of the first two experiments, tried by the loop described next; it is drawn just
 right of its stored weights so that it hides no point of equal size. The two lines and the
-other points are the classic architecture; a star of the modern architecture is read
-against the other modern star, not against the lines. The legend label of every point and
+other points are the classic architecture; the three stars of the modern architecture are
+read against one another, not against the lines: the shared model lowest, the plain model
+narrowed to width 184 above it, and the plain model of four modules highest. The legend label of every point and
 star is spelled from the plain words the ledger gives each axis value: what the cell
 shares, the values it has off the default, and for a cell that shares weights also how a
 module gets its chunk and how many chunks a bank holds. A line's label opens with the same
@@ -81,7 +109,7 @@ three seeds at that rate.
 | chunks | bank size: chunks stored per shared kind | 1, 2, **4**, 8 | `c1`, `c2`, `c8` |
 | rank | rank of a low-rank correction each module adds to the shared chunk it uses; 0 is none | **0**, 24 | `r24` |
 | modules | compute modules (layers) | 1, 2, 4, 6, **8** | `plain-l1`, `plain-l2`, `plain-l4`, `plain-l6` |
-| width | hidden width | 96, 128, 160, 192, 224, **256** | `plain-w96`, `plain-w128`, `plain-w160`, `plain-w192`, `plain-w224` |
+| width | hidden width | 96, 128, 160, 184, 192, 224, **256** | `plain-w96`, `plain-w128`, `plain-w160`, `plain-w184`, `plain-w192`, `plain-w224` |
 | steps | training budget in optimizer steps; the tag is the directory under runs/ | **8000**, 32000, 128000 | `8000`, `32000`, `128000` |
 | architecture | the transformer around the banks: classic is learned positions, layer norms and a GELU feed-forward; modern is rotary positions, root-mean-square norms and a gated feed-forward | **classic**, modern | `modern` |
 
@@ -106,6 +134,7 @@ hand in the ledger; statuses are computed.
 |---|---|---|---|---|
 | 1 | low-rank-correction | A shared bank plus a low-rank correction per module beats plain sharing at equal stored weights: one chunk per bank with a rank-24 correction in each of the 8 modules reaches a lower loss than the fixed map with two chunks, which stores 2,304 more weights (0.1%). | `32000/both-c1-r24` below `32000/both-c2`: +0.0094, +0.0081, +0.0023 | **refuted** |
 | 2 | reuse-survives-the-modern-architecture | The gain from reuse survives the modern architecture: with rotary positions, root-mean-square norms and a gated feed-forward, eight modules reusing four chunks still beat the plain model of four modules. | `32000/both-modern` below `32000/plain-l4-modern`: -0.0425, -0.0422, -0.0326 | **supported** |
+| 2 | sharing-beats-a-narrowed-modern-model | In the modern architecture the shared model beats a plain model of equal stored weights that keeps all eight modules: eight modules reusing four chunks through the fixed map reach a lower loss than the plain model narrowed to width 184, the width nearest in stored weights that the model can build, which stores 70,088 more weights (2.1%). | `32000/both-modern` below `32000/plain-w184-modern`: -0.0115, -0.0097, -0.0152 | **supported** |
 | 3 | picking-lock-in | A per-input pick loses to the fixed map because routers lock in early, near-random picks: with each module frozen to its router's most common pick after a quarter of training, the model still loses to the fixed map of module i to chunk i mod N. | `32000/both` below `32000/both-frozen-picks`: not run | **open** |
 | 3 | picking-chase | A per-input pick loses because chunks and router chase each other: holding the router's weights still after a quarter of training beats letting it learn throughout. | `32000/both-stopped-router` below `32000/both-routed`: not run | **open** |
 | 3 | picking-worse-function | A per-input pick loses because mixing chunks token by token is a worse function than one chunk per module, even under a router that no longer moves: frozen picks beat a stopped router. | `32000/both-frozen-picks` below `32000/both-stopped-router`: not run | **open** |
@@ -167,6 +196,41 @@ reuse-survives-the-modern-architecture (priority 2) is the highest-priority open
 
 In plain words: in a transformer built the way current ones are, eight modules that reuse four chunks by a fixed map beat four modules that own the same four chunks, at stored weights 2,048 apart (0.06%) and at every seed. The gain is 0.0391, where the same pair in the classic architecture gains 0.0186 (1.0134 against 1.0320), so the benefit of reuse does not come from the older design. What the round does not show: whether the shared model beats a modern model narrowed to the same stored weights, the better plain control in the classic architecture, which has no modern runs; whether a per-token pick fares differently in the modern architecture; and anything at another size or on other data. The modern cells trained at about twice the seconds per step of the fastest classic runs of the same shape, which the estimate, priced from classic cells, did not foresee; one more run in the rate sweep of the plain model accounts for the rest of the 7.4 GPU-hours.
 
+### Round 3: sharing-beats-a-narrowed-modern-model
+
+sharing-beats-a-narrowed-modern-model (priority 2) is the highest-priority open hypothesis with an unfinished comparison that fits 12 GPU-hours; the cheapest is 32000/both-modern against 32000/plain-w184-modern, estimated at 4.6 GPU-hours.
+
+32000/both-modern reached 1.0012 nats per byte with 3,289,936 stored weights at rate 0.002; 32000/plain-w184-modern reached 1.0133 with 3,360,024 at rate 0.001. Lower minus higher by seed: -0.0115, -0.0097, -0.0152. sharing-beats-a-narrowed-modern-model went from open to supported.
+
+8 runs, 5.7 GPU-hours of training against an estimate of 4.6; ledger rows written: `32000/plain-w184-modern`, `8000/plain-w184-modern`.
+
+In plain words: in a transformer built the way current ones are, eight modules sharing four chunks by a fixed map beat the plain model that keeps all eight modules and is narrowed to the same stored weights, by 0.0121 and at every seed. Width 184 is the nearest width the model builds (widths go in steps of 8) and stores 70,088 more weights than the shared model (2.1%), so the plain side is the larger and the gain at exactly equal stored weights is no smaller; width 176 would store 6.4% fewer. This is the stronger of the two plain controls: round 2's margin over the plain model of four modules was 0.0391, and the narrowed control is 0.0270 below that one, which leaves 0.0121. The plain model of four modules reads 0.0083 worse in the modern architecture than in the classic one (1.0403 against 1.0320), while the shared model reads 0.0122 better (1.0012 against 1.0134) and the narrowed model 0.0081 better than the classic narrower curve at its stored weights (1.0133 against 1.0214). So the modern plain model reads worse only as four modules at full width; no run isolates why. In the classic architecture the shared model is 0.0080 below the narrower curve at equal stored weights. What the round does not show: a modern plain curve (the control is one width, 2.1% larger, not an interpolation); another size, bank size, budget or dataset; a per-token pick in the modern architecture; and compute, which is not held equal: the shared model runs eight modules at width 256, about twice the arithmetic per token of the narrowed model. The long budget moved the narrowed model's best rate from 0.002 to 0.001, by 0.0003, so the rate sweep added a run at 0.0005; that run is 1.0 of the 1.1 GPU-hours over the estimate, and the rest is pace, 111 ms a step against the 108 the estimate used.
+
+### The modern cells beside the classic architecture
+
+Each cell of the modern architecture that has three seeds at the long budget, beside the
+same cell in the classic architecture where that cell has runs. A plain model narrowed in
+width alone that has no classic twin is set beside the classic narrower plain curve read at
+its stored weights, interpolated seed by seed as the gaps below are. One cell does not store
+the same weights in both architectures: the modern one has no position table, its norms have
+no bias, and its feed-forward hidden width is rounded.
+
+| cell | stored weights | mean loss | classic counterpart | its stored weights | its mean loss | cell minus classic, by seed | mean |
+|---|---|---|---|---|---|---|---|
+| `32000/both-modern` | 3,289,936 | 1.0012 | `32000/both` | 3,360,512 | 1.0134 | -0.0133, -0.0092, -0.0142 | -0.0122 |
+| `32000/plain-l4-modern` | 3,287,888 | 1.0403 | `32000/plain-l4` | 3,356,416 | 1.0320 | +0.0097, +0.0132, +0.0020 | +0.0083 |
+| `32000/plain-w184-modern` | 3,360,024 | 1.0133 | the narrower plain curve, read at the same stored weights | 3,360,024 | 1.0214 | -0.0097, -0.0088, -0.0058 | -0.0081 |
+
+The modern architecture lowers the loss of the shared model by 0.012 and of the narrowed
+plain model by 0.008, and raises the loss of the plain model of four modules by 0.008. That
+cell is above its classic twin at every seed, by 0.002 to 0.013, and its seeds spread 0.007,
+the widest of the three modern cells. The two plain cells differ in depth and width at once
+(four modules at width 256, eight at width 184), and no run varies one without the other or
+changes one part of the modern design at a time, so the table shows where the modern plain
+model reads worse and not why. What it settles is the size of the gain from sharing: the
+shared model's margin over the plain model of four modules, 0.039, is three times its margin
+over the narrowed one, 0.012.
+
 ### Every cell
 
 One row per cell and budget, from the run files; the rate, mean and seed spread are filled
@@ -193,6 +257,7 @@ where three seeds share a rate.
 | `32000/plain-l6` | none | fixed | 4 | 0 | 6 | 256 | 32000 | classic | 4,935,936 | 0.002 | 1.0019 | 0.0022 | 5 |
 | `32000/plain-w128` | none | fixed | 4 | 0 | 8 | 128 | 32000 | classic | 1,684,992 | 0.004 | 1.0779 | 0.0060 | 6 |
 | `32000/plain-w160` | none | fixed | 4 | 0 | 8 | 160 | 32000 | classic | 2,597,696 | 0.004 | 1.0413 | 0.0017 | 6 |
+| `32000/plain-w184-modern` | none | fixed | 4 | 0 | 8 | 184 | 32000 | modern | 3,360,024 | 0.001 | 1.0133 | 0.0026 | 5 |
 | `32000/plain-w192` | none | fixed | 4 | 0 | 8 | 192 | 32000 | classic | 3,707,008 | 0.002 | 1.0138 | 0.0014 | 5 |
 | `32000/plain-w224` | none | fixed | 4 | 0 | 8 | 224 | 32000 | classic | 5,012,928 | 0.002 | 0.9980 | 0.0038 | 5 |
 | `32000/plain-w96` | none | fixed | 4 | 0 | 8 | 96 | 32000 | classic | 968,896 | 0.002 | 1.1598 | 0.0010 | 4 |
@@ -215,6 +280,7 @@ where three seeds share a rate.
 | `8000/plain-l6` | none | fixed | 4 | 0 | 6 | 256 | 8000 | classic | 4,935,936 | 0.001 | 1.0952 | 0.0080 | 5 |
 | `8000/plain-w128` | none | fixed | 4 | 0 | 8 | 128 | 8000 | classic | 1,684,992 | 0.001 | 1.1939 | 0.0067 | 5 |
 | `8000/plain-w160` | none | fixed | 4 | 0 | 8 | 160 | 8000 | classic | 2,597,696 | 0.001 | 1.1544 | 0.0043 | 5 |
+| `8000/plain-w184-modern` | none | fixed | 4 | 0 | 8 | 184 | 8000 | modern | 3,360,024 |  |  |  | 3 |
 | `8000/plain-w192` | none | fixed | 4 | 0 | 8 | 192 | 8000 | classic | 3,707,008 | 0.001 | 1.1177 | 0.0027 | 5 |
 | `8000/plain-w224` | none | fixed | 4 | 0 | 8 | 224 | 8000 | classic | 5,012,928 | 0.001 | 1.0974 | 0.0056 | 5 |
 | `8000/plain-w96` | none | fixed | 4 | 0 | 8 | 96 | 8000 | classic | 968,896 | 0.001 | 1.2616 | 0.0040 | 5 |
@@ -805,6 +871,11 @@ Both experiments and the learning-rate sweep, from the run files.
 | plain-w160 | 1 | 32,000 | 0.004 | 2,597,696 | 1.0432 | 1145 |
 | plain-w160 | 2 | 32,000 | 0.004 | 2,597,696 | 1.0409 | 1729 |
 | plain-w160 | 0 | 32,000 | 0.008 | 2,597,696 | 1.0499 | 1303 |
+| plain-w184-modern | 0 | 32,000 | 0.0005 | 3,360,024 | 1.0167 | 3504 |
+| plain-w184-modern | 0 | 32,000 | 0.001 | 3,360,024 | 1.0104 | 3496 |
+| plain-w184-modern | 1 | 32,000 | 0.001 | 3,360,024 | 1.0141 | 3534 |
+| plain-w184-modern | 2 | 32,000 | 0.001 | 3,360,024 | 1.0155 | 3618 |
+| plain-w184-modern | 0 | 32,000 | 0.002 | 3,360,024 | 1.0107 | 3598 |
 | plain-w192 | 0 | 32,000 | 0.001 | 3,707,008 | 1.0406 | 1282 |
 | plain-w192 | 0 | 32,000 | 0.002 | 3,707,008 | 1.0125 | 1431 |
 | plain-w192 | 1 | 32,000 | 0.002 | 3,707,008 | 1.0152 | 1223 |
@@ -906,6 +977,9 @@ Both experiments and the learning-rate sweep, from the run files.
 | plain-w160 | 1 | 8,000 | 0.001 | 2,597,696 | 1.1540 | 282 |
 | plain-w160 | 2 | 8,000 | 0.001 | 2,597,696 | 1.1589 | 310 |
 | plain-w160 | 0 | 8,000 | 0.002 | 2,597,696 | 1.1185 | 272 |
+| plain-w184-modern | 0 | 8,000 | 0.0005 | 3,360,024 | 1.1035 | 871 |
+| plain-w184-modern | 0 | 8,000 | 0.001 | 3,360,024 | 1.0828 | 873 |
+| plain-w184-modern | 0 | 8,000 | 0.002 | 3,360,024 | 1.0820 | 872 |
 | plain-w192 | 0 | 8,000 | 0.0005 | 3,707,008 | 1.1527 | 303 |
 | plain-w192 | 0 | 8,000 | 0.001 | 3,707,008 | 1.1194 | 443 |
 | plain-w192 | 1 | 8,000 | 0.001 | 3,707,008 | 1.1191 | 321 |
