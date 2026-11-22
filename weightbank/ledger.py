@@ -27,12 +27,15 @@ class Axis:
     meaning: str
     default: Value
     tags: dict[Value, str]
+    words: dict[Value, str]
 
     def __post_init__(self) -> None:
         if self.default not in self.tags:
             raise ValueError(f"axis {self.name}: the default {self.default!r} is not one of its values")
         if len(set(self.tags.values())) != len(self.tags) or "" in self.tags.values():
             raise ValueError(f"axis {self.name}: every value needs its own tag")
+        if len(set(self.words.values())) != len(self.words) or "" in self.words.values():
+            raise ValueError(f"axis {self.name}: every value needs its own plain words")
 
 
 @dataclass
@@ -66,12 +69,6 @@ class Row:
     def losses(self) -> list[float] | None:
         rate = self.rate
         return None if rate is None else [self.at(rate)[seed] for seed in SEEDS]
-
-    @property
-    def seconds_per_step(self) -> float:
-        steps = self.cell[STEPS]
-        assert isinstance(steps, int)
-        return max(run.seconds for run in self.runs) / steps
 
     def written(self) -> dict[str, Any]:
         losses = self.losses
@@ -108,7 +105,13 @@ class Ledger:
     def __init__(self, fields: dict[str, Any]) -> None:
         self.default_name: str = fields["default_name"]
         self.axes = tuple(
-            Axis(axis["name"], axis["meaning"], axis["default"], {value: tag for value, tag in axis["values"]})
+            Axis(
+                axis["name"],
+                axis["meaning"],
+                axis["default"],
+                {value: tag for value, tag, _ in axis["values"]},
+                {value: words for value, _, words in axis["values"]},
+            )
             for axis in fields["axes"]
         )
         if [axis.name for axis in self.axes].count(STEPS) != 1 or len({axis.name for axis in self.axes}) != len(self.axes):
@@ -146,7 +149,7 @@ class Ledger:
                     "name": axis.name,
                     "meaning": axis.meaning,
                     "default": axis.default,
-                    "values": [[value, tag] for value, tag in axis.tags.items()],
+                    "values": [[value, tag, axis.words[value]] for value, tag in axis.tags.items()],
                 }
                 for axis in self.axes
             ],
@@ -176,6 +179,13 @@ class Ledger:
     def name(self, cell: Cell) -> str:
         tags = [axis.tags[cell[axis.name]] for axis in self.model_axes if cell[axis.name] != axis.default]
         return "-".join(tags) or self.default_name
+
+    def words(self, cell: Cell, spelled: tuple[str, ...] = ()) -> str:
+        return ", ".join(
+            axis.words[cell[axis.name]]
+            for axis in self.model_axes
+            if cell[axis.name] != axis.default or axis.name in spelled
+        )
 
     def key(self, cell: Cell) -> str:
         return f"{self.axis(STEPS).tags[cell[STEPS]]}/{self.name(cell)}"

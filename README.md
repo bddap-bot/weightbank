@@ -110,7 +110,8 @@ four lists:
 
 - **`axes`.** What a model can vary: `shared`, `pick`, `chunks`, `rank`, `modules`, `width`,
   `steps` and `architecture`. Each axis has a meaning, a default and its values, each value
-  with the tag it gets in a run's name. A cell is one value on each axis. Its name is the
+  with the tag it gets in a run's name and the plain words it gets in a chart's legend. A
+  cell is one value on each axis. Its name is the
   tags of the values that differ from the default, in axis order (`both-c1-r24` shares both
   banks, one chunk each, with a rank-24 correction), and `full` when none differs; `steps`
   is the directory instead.
@@ -135,7 +136,7 @@ trains nothing. Steering is editing: change a priority, or add a hypothesis with
 that would settle it. [report.md](report.md) states the cost estimate and shows the axes,
 the hypotheses with their evidence, and every round.
 
-Adding a value to an axis is one entry, `[value, tag]`, in that axis's `values`; adding an
+Adding a value to an axis is one entry, `[value, tag, plain words]`, in that axis's `values`; adding an
 axis is one entry in `axes`. Names, the cells hypotheses may name, the loop and the report's
 tables follow, and cells already tried sit at a new axis's default. The model has to know
 the value: an axis is a field of `ModelConfig` in `weightbank/model.py` of the same name,

@@ -5,63 +5,78 @@
    "name": "shared",
    "meaning": "which weights the modules draw from a bank instead of owning: none, feed-forward, attention or both",
    "default": "none",
-   "values": [["none", "own"], ["ff", "ff"], ["attn", "attn"], ["both", "both"]]
+   "values": [
+    ["none", "own", "nothing shared"],
+    ["ff", "ff", "feed-forward shared"],
+    ["attn", "attn", "attention shared"],
+    ["both", "both", "attention and feed-forward shared"]
+   ]
   },
   {
    "name": "pick",
    "meaning": "how a module gets its chunk: fixed is module i to chunk i mod N; routed is a per-token learned pick sampled with noise; argmax the same without noise; keys scores a learned key per chunk; frozen is routed until a quarter of training, then each module keeps its most common pick; stopped is routed with the router's weights held still after that quarter",
    "default": "fixed",
    "values": [
-    ["fixed", "fixed"],
-    ["routed", "routed"],
-    ["argmax", "routed-argmax"],
-    ["keys", "routed-keys"],
-    ["frozen", "frozen-picks"],
-    ["stopped", "stopped-router"]
+    ["fixed", "fixed", "fixed map"],
+    ["routed", "routed", "picked per token"],
+    ["argmax", "routed-argmax", "picked per token without sampling noise"],
+    ["keys", "routed-keys", "picked per token by a key per chunk"],
+    ["frozen", "frozen-picks", "picks frozen after a quarter of training"],
+    ["stopped", "stopped-router", "router stopped after a quarter of training"]
    ]
   },
   {
    "name": "chunks",
    "meaning": "bank size: chunks stored per shared kind",
    "default": 4,
-   "values": [[1, "c1"], [2, "c2"], [4, "c4"], [8, "c8"]]
+   "values": [[1, "c1", "1 chunk"], [2, "c2", "2 chunks"], [4, "c4", "4 chunks"], [8, "c8", "8 chunks"]]
   },
   {
    "name": "rank",
    "meaning": "rank of a low-rank correction each module adds to the shared chunk it uses; 0 is none",
    "default": 0,
-   "values": [[0, "r0"], [24, "r24"]]
+   "values": [[0, "r0", "no correction"], [24, "r24", "rank-24 correction per module"]]
   },
   {
    "name": "modules",
    "meaning": "compute modules (layers)",
    "default": 8,
-   "values": [[1, "plain-l1"], [2, "plain-l2"], [4, "plain-l4"], [6, "plain-l6"], [8, "plain-l8"]]
+   "values": [
+    [1, "plain-l1", "1 module"],
+    [2, "plain-l2", "2 modules"],
+    [4, "plain-l4", "4 modules"],
+    [6, "plain-l6", "6 modules"],
+    [8, "plain-l8", "8 modules"]
+   ]
   },
   {
    "name": "width",
    "meaning": "hidden width",
    "default": 256,
    "values": [
-    [96, "plain-w96"],
-    [128, "plain-w128"],
-    [160, "plain-w160"],
-    [192, "plain-w192"],
-    [224, "plain-w224"],
-    [256, "plain-w256"]
+    [96, "plain-w96", "width 96"],
+    [128, "plain-w128", "width 128"],
+    [160, "plain-w160", "width 160"],
+    [192, "plain-w192", "width 192"],
+    [224, "plain-w224", "width 224"],
+    [256, "plain-w256", "width 256"]
    ]
   },
   {
    "name": "steps",
    "meaning": "training budget in optimizer steps; the tag is the directory under runs/",
    "default": 8000,
-   "values": [[8000, "8000"], [32000, "32000"], [128000, "128000"]]
+   "values": [
+    [8000, "8000", "8,000 steps"],
+    [32000, "32000", "32,000 steps"],
+    [128000, "128000", "128,000 steps"]
+   ]
   },
   {
    "name": "architecture",
    "meaning": "the transformer around the banks: classic is learned positions, layer norms and a GELU feed-forward; modern is rotary positions, root-mean-square norms and a gated feed-forward",
    "default": "classic",
-   "values": [["classic", "classic"], ["modern", "modern"]]
+   "values": [["classic", "classic", "classic architecture"], ["modern", "modern", "modern architecture"]]
   }
  ],
  "hypotheses": [

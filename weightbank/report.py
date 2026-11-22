@@ -22,12 +22,14 @@ from weightbank.configs import (
     NO_ROUTER,
     NOISE_FREE,
     OWN_CHUNK,
+    PICK,
     ROUNDS_ONE_AND_TWO,
     ROUTED,
     ROUTER_VARIANTS,
     SHALLOWER,
     WIDTH,
     named,
+    plain_words,
 )
 from weightbank.ledger import ABANDONED, SEEDS, STEPS, Ledger, Row
 from weightbank.sweep import (
@@ -59,13 +61,6 @@ SHALLOWER_LINE = "#a3a29c"
 FIXED_LINE = "#0b0b0b"
 PICKING = (*ROUTED, *ROUTER_VARIANTS)
 COMPARED = (*PICKING, *FIXED_MAP.values())
-LABELS = {
-    "ff-routed": "feed-forward routed",
-    "attn-routed": "attention routed",
-    "both-routed": "both routed",
-    NOISE_FREE: "both routed, no sampling noise",
-    KEYS: "both routed, key per chunk",
-}
 COLORS = {
     "ff-routed": "#2a78d6",
     "attn-routed": "#eb6834",
@@ -75,10 +70,10 @@ COLORS = {
 }
 DODGE = {NO_ROUTER: -9, "both-routed": 0, NOISE_FREE: 9, KEYS: 18}
 MARKERS = {"ff-routed": "D", "attn-routed": "D", "both-routed": "D", NOISE_FREE: "^", KEYS: "v"}
-assert LABELS.keys() == COLORS.keys() == MARKERS.keys() == set(PICKING)
+assert COLORS.keys() == MARKERS.keys() == set(PICKING)
 LATER_DODGE = 9
 LATER_SHADES = (5, 6, 4, 7, 0, 1, 2, 3)
-LEGEND_COLUMNS = 4
+LEGEND_COLUMNS = 2
 
 
 @dataclass
@@ -200,7 +195,7 @@ def runs_table(ledger: Ledger) -> str:
         for run in (Run.read(RUNS.parent / row_run.file) for row in ledger.rows for row_run in row.runs)
     ]
     return table(
-        ["configuration", "seed", "steps", "learning rate", "stored weights", "final validation loss", "wall seconds (training)"],
+        ["configuration", "seed", "steps", "learning rate", "stored weights", "final validation loss", "training seconds"],
         rows,
     )
 
@@ -641,9 +636,10 @@ def panel(axes: Axes, budget: Budget, later: Sequence[Row], ledger: Ledger, low:
     summaries = budget.summaries
     axes.set_facecolor(SURFACE)
     axes.set_xscale("log")
+    plain = plain_words(ledger.cell({}))
     for curve, color, label in (
-        (budget.narrower, NARROWER_LINE, f"plain, narrower ({MODULES} modules)"),
-        (budget.shallower, SHALLOWER_LINE, f"plain, fewer modules (width {WIDTH})"),
+        (budget.narrower, NARROWER_LINE, f"{plain}, narrower ({ledger.axis('modules').words[MODULES]})"),
+        (budget.shallower, SHALLOWER_LINE, f"{plain}, fewer modules ({ledger.axis('width').words[WIDTH]})"),
     ):
         stored = [summary.stored / 1e6 for summary in curve]
         axes.plot(stored, [summary.loss for summary in curve], color=color, linewidth=2, marker="o", markersize=5, label=label, zorder=2)
@@ -663,13 +659,16 @@ def panel(axes: Axes, budget: Budget, later: Sequence[Row], ledger: Ledger, low:
         color=FIXED_LINE,
         linewidth=1.5,
         linestyle=(0, (4, 3)),
-        label="fixed map, no router (squares, chunks beside each)",
+        label=f"{ledger.words(ledger.parse(NO_ROUTER, budget.steps), (PICK,))} (squares, chunks beside each)",
         zorder=3,
     )
     points: list[tuple[Summary, str, str, str, str | None]] = [
         (summaries[name], FIXED_LINE, SURFACE, "s", None) for name in FIXED_MAP.values()
     ]
-    points += [(summaries[name], COLORS[name], COLORS[name], MARKERS[name], LABELS[name]) for name in PICKING]
+    points += [
+        (summaries[name], COLORS[name], COLORS[name], MARKERS[name], plain_words(ledger.parse(name, budget.steps)))
+        for name in PICKING
+    ]
     for summary, color, fill, marker, legend in points:
         dodge = ScaledTranslation(DODGE.get(summary.name, 0) / 72, 0, axes.figure.dpi_scale_trans)
         axes.errorbar(
@@ -705,7 +704,7 @@ def panel(axes: Axes, budget: Budget, later: Sequence[Row], ledger: Ledger, low:
             capsize=5,
             linewidth=1.5,
             linestyle="none",
-            label=ledger.name(row.cell),
+            label=plain_words(row.cell),
             transform=axes.transData + ScaledTranslation(LATER_DODGE / 72, 0, axes.figure.dpi_scale_trans),
             zorder=5,
         )
@@ -753,7 +752,7 @@ def chart(budget: Budget, ledger: Ledger) -> None:
     figure.text(
         0.5,
         0.005,
-        "The fixed map at 4 chunks and the three both-routed points store the same weights to within 1.2% and are drawn side by side;"
+        "The fixed map at 4 chunks and the three points with both kinds picked per token store the same weights to within 1.2% and are drawn side by side;"
         " a star is drawn just right of its stored weights.",
         color=MUTED,
         fontsize=9,

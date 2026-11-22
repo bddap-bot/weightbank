@@ -5,6 +5,7 @@ import json
 import math
 import os
 import time
+from statistics import median
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ WEIGHT_DECAY = 0.1
 LOG_EVERY = 500
 LOG_WINDOWS = 8 * EVAL_BATCH
 SETTLE_PART = 4
+PACE_REACH = 2
 GPU_MIB = "WEIGHTBANK_GPU_MIB"
 
 
@@ -100,6 +102,13 @@ def rate(step: int, steps: int, peak: float) -> float:
         return peak * (step + 1) / WARMUP
     progress = (step - WARMUP) / max(1, steps - WARMUP)
     return peak * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * progress)))
+
+
+def training_seconds(paces: list[float], steps: int) -> float:
+    span = 2 * PACE_REACH + 1
+    starts = [max(0, min(window - PACE_REACH, len(paces) - span)) for window in range(len(paces))]
+    steady = [median(paces[start : start + span]) for start in starts]
+    return sum(pace * min(LOG_EVERY, steps - window * LOG_EVERY) for window, pace in enumerate(steady))
 
 
 class PickTally:
@@ -185,7 +194,7 @@ def train(plan: Plan) -> Run:
     )
     scaler = GradScaler()
     curve: list[list[float]] = []
-    seconds = 0.0
+    paces: list[float] = []
     started = time.monotonic()
     for step in range(steps):
         if step == steps // SETTLE_PART:
@@ -203,19 +212,23 @@ def train(plan: Plan) -> Run:
         scaler.step(optimizer)
         scaler.update()
         if (step + 1) % LOG_EVERY == 0:
-            if not math.isfinite(loss.item()):
-                print(f"training loss {loss.item()} at step {step + 1}: diverged", flush=True)
+            logged = loss.item()
+            paces.append((time.monotonic() - started) / LOG_EVERY)
+            if not math.isfinite(logged):
+                print(f"training loss {logged} at step {step + 1}: diverged", flush=True)
+                seconds = training_seconds(paces, step + 1)
                 return Run(name, seed, steps, plan.peak_rate, stored, math.inf, math.inf, seconds, None, None, curve)
-            seconds += time.monotonic() - started
             validation = evaluate(model, corpus.validation, windows=LOG_WINDOWS).loss
             curve.append([step + 1, validation])
             print(
-                f"step {step + 1} train {loss.item():.4f} validation {validation:.4f} "
-                f"training {seconds:.0f}s",
+                f"step {step + 1} train {logged:.4f} validation {validation:.4f} "
+                f"{paces[-1] * 1000:.0f} ms a step",
                 flush=True,
             )
             started = time.monotonic()
-    seconds += time.monotonic() - started
+    if steps % LOG_EVERY:
+        paces.append((time.monotonic() - started) / (steps % LOG_EVERY))
+    seconds = training_seconds(paces, steps)
     final = evaluate(model, corpus.validation)
     sampled = evaluate(model, corpus.validation, sample_picks=True)
     print(

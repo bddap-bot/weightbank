@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 import sys
 import time
@@ -36,8 +37,19 @@ def seconds_per_step(ledger: Ledger, cell: Cell) -> float:
     def distance(other: Cell) -> int:
         return sum(cell[axis.name] != other[axis.name] for axis in ledger.model_axes)
 
-    nearest = min(distance(row.cell) for row in ledger.rows)
-    return max(row.seconds_per_step for row in ledger.rows if distance(row.cell) == nearest)
+    paces = [
+        (row.cell, run.seconds / int(row.cell[STEPS]))
+        for row in ledger.rows
+        for run in row.runs
+        if math.isfinite(run.loss)
+    ]
+    nearest = min(distance(tried) for tried, _ in paces)
+    fastest: dict[str, float] = {}
+    for tried, pace in paces:
+        if distance(tried) == nearest:
+            name = ledger.name(tried)
+            fastest[name] = min(pace, fastest.get(name, pace))
+    return max(fastest.values())
 
 
 def hours(ledger: Ledger, cell: Cell) -> float:

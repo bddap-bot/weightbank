@@ -39,6 +39,11 @@ def model_config(cell: Cell) -> ModelConfig:
     return ModelConfig(**settings)
 
 
+def plain_words(cell: Cell) -> str:
+    shares = cell[SHARED] != LEDGER.axis(SHARED).default
+    return LEDGER.words(cell, SHARING_AXES if shares else (SHARED,))
+
+
 def named(**changed: int | str) -> str:
     return LEDGER.name(LEDGER.cell(changed))
 

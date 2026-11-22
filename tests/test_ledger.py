@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from weightbank import configs
-from weightbank.configs import ROUNDS_ONE_AND_TWO, model_config
+from weightbank.configs import ROUNDS_ONE_AND_TWO, model_config, plain_words
 from weightbank.ledger import OPEN, PATH, REFUTED, SEEDS, STEPS, SUPPORTED, Cell, Ledger, Row, RunRow, verdict
 from weightbank.model import Fixed, Own, Routed, Settled, Transformer
 
@@ -75,10 +75,12 @@ def test_an_axis_added_to_the_ledger_reaches_names_cells_and_the_model(monkeypat
     added = fields()
     added["axes"] = [axis for axis in added["axes"] if axis["name"] != "architecture"]
     added["hypotheses"] = []
+    added["cells"] = [row for row in added["cells"] if "architecture" not in row["cell"]]
     without = Ledger(json.loads(json.dumps(added)))
-    added["axes"].append({"name": "architecture", "meaning": "", "default": "classic", "values": [["classic", "classic"], ["modern", "modern"]]})
+    added["axes"].append({"name": "architecture", "meaning": "", "default": "classic", "values": [["classic", "classic", "classic"], ["modern", "modern", "modern"]]})
     ledger = Ledger(added)
-    assert [ledger.key(row.cell) for row in ledger.rows] == [before.key(row.cell) for row in before.rows]
+    classic = [before.key(row.cell) for row in before.rows if row.cell["architecture"] == "classic"]
+    assert [ledger.key(row.cell) for row in ledger.rows] == classic
     assert all(row.cell["architecture"] == "classic" for row in ledger.rows)
     assert all("architecture" not in row.cell for row in without.rows)
     cell = ledger.cell({"shared": "both", "architecture": "modern", STEPS: 32000})
@@ -92,20 +94,22 @@ def test_an_axis_added_to_the_ledger_reaches_names_cells_and_the_model(monkeypat
 
 def test_an_axis_the_model_has_no_setting_for_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     added = fields()
-    added["axes"].append({"name": "colour", "meaning": "", "default": "red", "values": [["red", "red"]]})
+    added["axes"].append({"name": "colour", "meaning": "", "default": "red", "values": [["red", "red", "red"]]})
     ledger = Ledger(added)
     monkeypatch.setattr(configs, "LEDGER", ledger)
     with pytest.raises(ValueError):
         model_config(ledger.cell({}))
 
 
-def test_an_axis_needs_its_default_among_its_values_and_a_tag_for_each() -> None:
+def test_an_axis_needs_its_default_among_its_values_and_a_tag_and_plain_words_for_each() -> None:
     for axis in (
-        {"name": "a", "meaning": "", "default": 1, "values": [[2, "two"]]},
-        {"name": "a", "meaning": "", "default": 1, "values": [[1, "one"], [2, "one"]]},
-        {"name": "a", "meaning": "", "default": 1, "values": [[1, ""]]},
-        {"name": "rank", "meaning": "", "default": 1, "values": [[1, "one"]]},
-        {"name": "a", "meaning": "", "default": 1, "values": [[1, "one"], [2, "routed"]]},
+        {"name": "a", "meaning": "", "default": 1, "values": [[2, "two", "two"]]},
+        {"name": "a", "meaning": "", "default": 1, "values": [[1, "one", "one"], [2, "one", "two"]]},
+        {"name": "a", "meaning": "", "default": 1, "values": [[1, "", "one"]]},
+        {"name": "a", "meaning": "", "default": 1, "values": [[1, "one", "one"], [2, "two", "one"]]},
+        {"name": "a", "meaning": "", "default": 1, "values": [[1, "one", ""]]},
+        {"name": "rank", "meaning": "", "default": 1, "values": [[1, "one", "one"]]},
+        {"name": "a", "meaning": "", "default": 1, "values": [[1, "one", "one"], [2, "routed", "two"]]},
     ):
         added = fields()
         added["axes"].append(axis)
@@ -123,7 +127,7 @@ def test_with_nothing_shared_the_sharing_axes_stay_at_their_defaults() -> None:
 
 def test_a_value_the_model_cannot_build_is_refused_when_a_cell_names_it(monkeypatch: pytest.MonkeyPatch) -> None:
     added = fields()
-    next(axis for axis in added["axes"] if axis["name"] == "pick")["values"].append(["dice", "dice"])
+    next(axis for axis in added["axes"] if axis["name"] == "pick")["values"].append(["dice", "dice", "dice"])
     ledger = Ledger(added)
     monkeypatch.setattr(configs, "LEDGER", ledger)
     assert ledger.name(ledger.cell({"shared": "both", "pick": "dice"})) == "both-dice"
@@ -230,3 +234,18 @@ def test_each_pick_builds_its_own_kind_of_bank() -> None:
     }
     partly = model_config(ledger.cell({"shared": "attn", "pick": "routed", "chunks": 2}))
     assert (partly.feed_forward, partly.attention) == (Own(), Routed(2))
+
+
+def test_a_chart_label_is_the_plain_words_of_the_axes_and_never_a_tag() -> None:
+    ledger = Ledger.read()
+    assert plain_words(ledger.parse("both-c1-r24", 32000)) == (
+        "attention and feed-forward shared, fixed map, 1 chunk, rank-24 correction per module"
+    )
+    assert plain_words(ledger.parse("ff-routed", 32000)) == "feed-forward shared, picked per token, 4 chunks"
+    assert plain_words(ledger.parse("plain-l4-modern", 32000)) == "nothing shared, 4 modules, modern architecture"
+    assert plain_words(ledger.cell({})) == "nothing shared"
+    for cell in every_cell(ledger):
+        words = plain_words(cell).split(", ")
+        tags = {tag for axis in ledger.model_axes for value, tag in axis.tags.items() if axis.words[value] != tag}
+        assert not tags & set(words)
+        assert all(axis.words[cell[axis.name]] in words for axis in ledger.model_axes if cell[axis.name] != axis.default)

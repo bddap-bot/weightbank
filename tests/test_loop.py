@@ -57,13 +57,47 @@ def test_the_cost_of_a_cell_is_its_protocol_at_the_speed_of_the_nearest_tried_ce
     record(Plan("full", 0, 8000, 1e-3), 1.3, seconds=4000.0)
     made = ledger()
     assert loop.seconds_per_step(made, made.cell(CORRECTED)) == 0.1
-    record(Plan("both-c2", 1, 8000, 1e-3), 1.3, seconds=1600.0)
+    record(Plan("both-c1", 0, 8000, 1e-3), 1.3, seconds=1600.0)
     assert loop.seconds_per_step(ledger(), made.cell(CORRECTED)) == 0.2
-    (train.RUNS / "8000" / "both-c2-lr0.001-s1.json").unlink()
+    (train.RUNS / "8000" / "both-c1-lr0.001-s0.json").unlink()
     assert loop.hours(made, made.cell(TWO)) == 0.0
     assert loop.hours(made, made.cell(CORRECTED)) == pytest.approx((3 * 8000 + 4 * 32000) * 0.1 / 3600)
     record(Plan("both-c1-r24", 0, 8000, 5e-4), 1.5)
     assert loop.hours(made, made.cell(CORRECTED)) == pytest.approx((2 * 8000 + 4 * 32000) * 0.1 / 3600)
+
+
+def test_the_cost_estimate_prices_a_cell_at_its_fastest_run_at_any_budget() -> None:
+    record(Plan("both-c2", 1, 8000, 1e-3), 1.3, seconds=7200.0)
+    record(Plan("both-c2", 2, 8000, 1e-3), 1.3, seconds=1600.0)
+    assert loop.seconds_per_step(ledger(), ledger().cell(CORRECTED)) == 0.1
+    for path in (train.RUNS / "32000").glob("*.json"):
+        path.write_text(path.read_text().replace("3200.0", "9600.0"))
+    assert loop.seconds_per_step(ledger(), ledger().cell(CORRECTED)) == 0.1
+    for path in (train.RUNS / "8000").glob("both-c2-lr*-s0.json"):
+        path.write_text(path.read_text().replace("800.0", "2400.0"))
+    assert loop.seconds_per_step(ledger(), ledger().cell(CORRECTED)) == 0.2
+    record(Plan("both-c2", 0, 32000, 4e-3), 1.3, seconds=4800.0)
+    assert loop.seconds_per_step(ledger(), ledger().cell(CORRECTED)) == 0.15
+    record(Plan("both-c2", 1, 8000, 2e-3), float("inf"), seconds=80.0)
+    assert loop.seconds_per_step(ledger(), ledger().cell(CORRECTED)) == 0.15
+    record(Plan("both-c8-r24", 0, 8000, 1e-3), 1.3, seconds=3200.0)
+    record(Plan("both-c8-r24", 1, 8000, 1e-3), 1.3, seconds=4000.0)
+    record(Plan("both-c2-r24", 0, 8000, 1e-3), 1.3, seconds=2400.0)
+    assert loop.seconds_per_step(ledger(), ledger().cell(CORRECTED)) == 0.4
+
+
+def test_training_seconds_leave_out_a_stretch_the_run_sat_stopped() -> None:
+    steady = [0.05] * 14
+    assert train.training_seconds([*steady, 40.0, 0.05], 8000) == pytest.approx(400.0)
+    assert train.training_seconds([0.2, *steady[:6], 40.0, 40.0, *steady[:7]], 8000) == pytest.approx(400.0)
+    assert train.training_seconds([0.2] * 4 + [0.05] * 12, 8000) == pytest.approx(4 * 500 * 0.2 + 12 * 500 * 0.05)
+    assert train.training_seconds([0.05, 0.05, 0.05], 1250) == pytest.approx(62.5)
+    assert train.training_seconds([0.01, *steady, 0.05, 40.0], 8000) == pytest.approx(400.0)
+    for first in range(15):
+        stopped = [0.05] * 16
+        stopped[first : first + 2] = [40.0, 40.0]
+        assert train.training_seconds(stopped, 8000) == pytest.approx(400.0)
+    assert train.training_seconds([], 0) == 0.0
 
 
 def test_the_highest_priority_open_hypothesis_that_fits_is_chosen_at_its_cheapest_comparison() -> None:
