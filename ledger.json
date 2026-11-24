@@ -156,19 +156,23 @@
    "settle": [
     {
      "lower": {"shared": "both", "steps": 32000, "architecture": "modern"},
-     "higher": {"shared": "both", "pick": "drawn", "draw": 1, "steps": 32000, "architecture": "modern"}
+     "higher": {"shared": "both", "pick": "drawn", "draw": 1, "steps": 32000, "architecture": "modern"},
+     "differences": [-0.021, -0.0175, -0.0203]
     },
     {
      "lower": {"shared": "both", "steps": 32000, "architecture": "modern"},
-     "higher": {"shared": "both", "pick": "drawn", "draw": 2, "steps": 32000, "architecture": "modern"}
+     "higher": {"shared": "both", "pick": "drawn", "draw": 2, "steps": 32000, "architecture": "modern"},
+     "differences": [-0.0135, -0.0099, -0.0104]
     },
     {
      "lower": {"shared": "both", "steps": 32000, "architecture": "modern"},
-     "higher": {"shared": "both", "pick": "drawn", "draw": 3, "steps": 32000, "architecture": "modern"}
+     "higher": {"shared": "both", "pick": "drawn", "draw": 3, "steps": 32000, "architecture": "modern"},
+     "differences": [-0.0051, 0.003, -0.0033]
     },
     {
      "lower": {"shared": "both", "steps": 32000, "architecture": "modern"},
-     "higher": {"shared": "both", "pick": "drawn", "draw": 4, "steps": 32000, "architecture": "modern"}
+     "higher": {"shared": "both", "pick": "drawn", "draw": 4, "steps": 32000, "architecture": "modern"},
+     "differences": [-0.0015, 0.003, -0.0011]
     }
    ]
   },
@@ -414,6 +418,82 @@
    "differences": [-0.0154, -0.0217, -0.0209],
    "reading": "32000/modern reached 0.9819 nats per byte with 6,444,192 stored weights at rate 0.001; 32000/both-modern reached 1.0012 with 3,289,936 at rate 0.002. Lower minus higher by seed: -0.0154, -0.0217, -0.0209. halving-stored-weights-costs-loss-at-equal-compute went from open to supported.",
    "note": "In plain words: this is the pair to judge sharing by when compute is what is held equal. Both models run eight modules at width 256 and multiply by the same number of weights per token; the plain one owns all eight chunks of each kind and stores 6,444,192 weights, the shared one reuses four and stores 3,289,936, 51% as many. The plain model reaches 0.9819 and the shared one 1.0012, so halving the stored weights costs 0.0193 nats per byte on average, at every seed (0.0154, 0.0217, 0.0209), where each model's seeds have a standard deviation of 0.002 to 0.003. The price is small beside what the same halving costs a plain model that gives up modules or width: four modules at width 256 reach 1.0403, 0.0584 above the full plain model, and eight modules at width 184 reach 1.0133, 0.0314 above it. What the round does not show: the same pair at another size, bank size, budget or dataset, or the classic pair under one protocol (there the full model reads 0.9833 and the shared one 1.0134, 0.0301 apart). The plain model's best rate is 0.001 and the shared model's 0.002, each chosen on seed 0; the plain model at 0.002 reads 0.9852 at seed 0, 0.0017 above its run at 0.001."
+  },
+  {
+   "hypothesis": "the-mod-map-beats-a-map-drawn-at-random",
+   "lower": {"shared": "both", "steps": 32000, "architecture": "modern"},
+   "higher": {"shared": "both", "pick": "drawn", "draw": 1, "steps": 32000, "architecture": "modern"},
+   "budget_gpu_hours": 12.0,
+   "estimated_gpu_hours": 2.9,
+   "why": "the-mod-map-beats-a-map-drawn-at-random (priority 2) is the highest-priority open hypothesis with an unfinished comparison that fits 12 GPU-hours; the cheapest is 32000/both-modern against 32000/both-drawn-d1-modern, estimated at 2.9 GPU-hours.",
+   "runs": [
+    "runs/32000/both-drawn-d1-modern-lr0.002-s0.json",
+    "runs/32000/both-drawn-d1-modern-lr0.002-s1.json",
+    "runs/32000/both-drawn-d1-modern-lr0.002-s2.json"
+   ],
+   "rows": ["32000/both-drawn-d1-modern"],
+   "gpu_hours": 2.8,
+   "statuses": {},
+   "differences": [-0.021, -0.0175, -0.0203],
+   "reading": "32000/both-modern reached 1.0012 nats per byte with 3,289,936 stored weights at rate 0.002; 32000/both-drawn-d1-modern reached 1.0208 with 3,289,936 at rate 0.002. Lower minus higher by seed: -0.0210, -0.0175, -0.0203. No status changed.",
+   "note": "A drawn map is fixed for the whole run and the same at every training seed: each of the eight modules' chunks is drawn uniformly from a generator seeded with the draw's number alone, apart from the training seed, and a draw that leaves a chunk unused is thrown away whole and drawn again, so every map uses all four chunks and stores exactly the mod map's 3,289,936 weights; an unused chunk never has to be counted. It trains at the mod map's learning rate, 0.002, with no sweep of its own. Draw 1 is the map 0 1 1 2 2 2 3 1, numbering chunks in order of first use; it is worse than the mod map (0 1 2 3 0 1 2 3) at every seed, by 0.0196 on average: 1.0208 against 1.0012."
+  },
+  {
+   "hypothesis": "the-mod-map-beats-a-map-drawn-at-random",
+   "lower": {"shared": "both", "steps": 32000, "architecture": "modern"},
+   "higher": {"shared": "both", "pick": "drawn", "draw": 2, "steps": 32000, "architecture": "modern"},
+   "budget_gpu_hours": 12.0,
+   "estimated_gpu_hours": 2.8,
+   "why": "the-mod-map-beats-a-map-drawn-at-random (priority 2) is the highest-priority open hypothesis with an unfinished comparison that fits 12 GPU-hours; the cheapest is 32000/both-modern against 32000/both-drawn-d2-modern, estimated at 2.8 GPU-hours.",
+   "runs": [
+    "runs/32000/both-drawn-d2-modern-lr0.002-s0.json",
+    "runs/32000/both-drawn-d2-modern-lr0.002-s1.json",
+    "runs/32000/both-drawn-d2-modern-lr0.002-s2.json"
+   ],
+   "rows": ["32000/both-drawn-d2-modern"],
+   "gpu_hours": 2.9,
+   "statuses": {},
+   "differences": [-0.0135, -0.0099, -0.0104],
+   "reading": "32000/both-modern reached 1.0012 nats per byte with 3,289,936 stored weights at rate 0.002; 32000/both-drawn-d2-modern reached 1.0125 with 3,289,936 at rate 0.002. Lower minus higher by seed: -0.0135, -0.0099, -0.0104. No status changed.",
+   "note": "A drawn map is fixed for the whole run and the same at every training seed: each of the eight modules' chunks is drawn uniformly from a generator seeded with the draw's number alone, apart from the training seed, and a draw that leaves a chunk unused is thrown away whole and drawn again, so every map uses all four chunks and stores exactly the mod map's 3,289,936 weights; an unused chunk never has to be counted. It trains at the mod map's learning rate, 0.002, with no sweep of its own. Draw 2 is the map 0 0 1 1 0 2 2 3, numbering chunks in order of first use; it is worse than the mod map at every seed, by 0.0113 on average: 1.0125 against 1.0012."
+  },
+  {
+   "hypothesis": "the-mod-map-beats-a-map-drawn-at-random",
+   "lower": {"shared": "both", "steps": 32000, "architecture": "modern"},
+   "higher": {"shared": "both", "pick": "drawn", "draw": 3, "steps": 32000, "architecture": "modern"},
+   "budget_gpu_hours": 12.0,
+   "estimated_gpu_hours": 2.8,
+   "why": "the-mod-map-beats-a-map-drawn-at-random (priority 2) is the highest-priority open hypothesis with an unfinished comparison that fits 12 GPU-hours; the cheapest is 32000/both-modern against 32000/both-drawn-d3-modern, estimated at 2.8 GPU-hours.",
+   "runs": [
+    "runs/32000/both-drawn-d3-modern-lr0.002-s0.json",
+    "runs/32000/both-drawn-d3-modern-lr0.002-s1.json",
+    "runs/32000/both-drawn-d3-modern-lr0.002-s2.json"
+   ],
+   "rows": ["32000/both-drawn-d3-modern"],
+   "gpu_hours": 3.0,
+   "statuses": {},
+   "differences": [-0.0051, 0.003, -0.0033],
+   "reading": "32000/both-modern reached 1.0012 nats per byte with 3,289,936 stored weights at rate 0.002; 32000/both-drawn-d3-modern reached 1.0030 with 3,289,936 at rate 0.002. Lower minus higher by seed: -0.0051, +0.0030, -0.0033. No status changed.",
+   "note": "A drawn map is fixed for the whole run and the same at every training seed: each of the eight modules' chunks is drawn uniformly from a generator seeded with the draw's number alone, apart from the training seed, and a draw that leaves a chunk unused is thrown away whole and drawn again, so every map uses all four chunks and stores exactly the mod map's 3,289,936 weights; an unused chunk never has to be counted. It trains at the mod map's learning rate, 0.002, with no sweep of its own. Draw 3 is the map 0 1 2 1 1 0 0 3, numbering chunks in order of first use; it is level with the mod map: 1.0030 against 1.0012, 0.0018 above on average with one seed of three below, inside the mod map's seed spread of 0.0029."
+  },
+  {
+   "hypothesis": "the-mod-map-beats-a-map-drawn-at-random",
+   "lower": {"shared": "both", "steps": 32000, "architecture": "modern"},
+   "higher": {"shared": "both", "pick": "drawn", "draw": 4, "steps": 32000, "architecture": "modern"},
+   "budget_gpu_hours": 12.0,
+   "estimated_gpu_hours": 2.8,
+   "why": "the-mod-map-beats-a-map-drawn-at-random (priority 2) is the highest-priority open hypothesis with an unfinished comparison that fits 12 GPU-hours; the cheapest is 32000/both-modern against 32000/both-drawn-d4-modern, estimated at 2.8 GPU-hours.",
+   "runs": [
+    "runs/32000/both-drawn-d4-modern-lr0.002-s0.json",
+    "runs/32000/both-drawn-d4-modern-lr0.002-s1.json",
+    "runs/32000/both-drawn-d4-modern-lr0.002-s2.json"
+   ],
+   "rows": ["32000/both-drawn-d4-modern"],
+   "gpu_hours": 3.0,
+   "statuses": {},
+   "differences": [-0.0015, 0.003, -0.0011],
+   "reading": "32000/both-modern reached 1.0012 nats per byte with 3,289,936 stored weights at rate 0.002; 32000/both-drawn-d4-modern reached 1.0011 with 3,289,936 at rate 0.002. Lower minus higher by seed: -0.0015, +0.0030, -0.0011. No status changed.",
+   "note": "A drawn map is fixed for the whole run and the same at every training seed: each of the eight modules' chunks is drawn uniformly from a generator seeded with the draw's number alone, apart from the training seed, and a draw that leaves a chunk unused is thrown away whole and drawn again, so every map uses all four chunks and stores exactly the mod map's 3,289,936 weights; an unused chunk never has to be counted. It trains at the mod map's learning rate, 0.002, with no sweep of its own. Draw 4 is the map 0 1 2 3 1 1 1 0, numbering chunks in order of first use; it is level with the mod map: 1.0011 against 1.0012, with one seed of three below. With this round all four drawn maps have run, so five distinct maps have been trained, the mod map among them. In plain words: which module uses which chunk matters, and by more than the training seed does. The five maps' mean losses run from 1.0011 to 1.0208, a standard deviation across maps of 0.0087, where the three training seeds of one map have a standard deviation of 0.0015 on average (0.0006 to 0.0029). The hypothesis stays open by its own rule, because two of the four drawn maps are not separated from the mod map: two are worse at every seed and two are level, each below it at seed 1 alone. The two that lose each put three pairs of neighbouring modules on one chunk and the two that are level put two; the mod map puts none. Four draws do not separate that from how unevenly a map loads its chunks, or from which modules share with the first and the last, or from the learning rate, which was chosen for the mod map and used for every map. What the rounds do not show: more than four draws, another bank size, more modules over the same bank (an open hypothesis in the ledger), or a map chosen on purpose."
   }
  ],
  "cells": [
@@ -542,6 +622,126 @@
     {"file": "runs/32000/both-c8-lr0.002-s0.json", "rate": 0.002, "seed": 0, "loss": 0.9845, "seconds": 2059},
     {"file": "runs/32000/both-c8-lr0.002-s1.json", "rate": 0.002, "seed": 1, "loss": 0.9847, "seconds": 2103},
     {"file": "runs/32000/both-c8-lr0.002-s2.json", "rate": 0.002, "seed": 2, "loss": 0.9832, "seconds": 2487}
+   ]
+  },
+  {
+   "cell": {"shared": "both", "pick": "drawn", "draw": 1, "steps": 32000, "architecture": "modern"},
+   "stored_weights": 3289936,
+   "rate": 0.002,
+   "loss": 1.0208,
+   "seed_sd": 0.001,
+   "runs": [
+    {
+     "file": "runs/32000/both-drawn-d1-modern-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.0199,
+     "seconds": 3390
+    },
+    {
+     "file": "runs/32000/both-drawn-d1-modern-lr0.002-s1.json",
+     "rate": 0.002,
+     "seed": 1,
+     "loss": 1.0219,
+     "seconds": 3373
+    },
+    {
+     "file": "runs/32000/both-drawn-d1-modern-lr0.002-s2.json",
+     "rate": 0.002,
+     "seed": 2,
+     "loss": 1.0206,
+     "seconds": 3464
+    }
+   ]
+  },
+  {
+   "cell": {"shared": "both", "pick": "drawn", "draw": 2, "steps": 32000, "architecture": "modern"},
+   "stored_weights": 3289936,
+   "rate": 0.002,
+   "loss": 1.0125,
+   "seed_sd": 0.0018,
+   "runs": [
+    {
+     "file": "runs/32000/both-drawn-d2-modern-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.0124,
+     "seconds": 3366
+    },
+    {
+     "file": "runs/32000/both-drawn-d2-modern-lr0.002-s1.json",
+     "rate": 0.002,
+     "seed": 1,
+     "loss": 1.0143,
+     "seconds": 3456
+    },
+    {
+     "file": "runs/32000/both-drawn-d2-modern-lr0.002-s2.json",
+     "rate": 0.002,
+     "seed": 2,
+     "loss": 1.0107,
+     "seconds": 3456
+    }
+   ]
+  },
+  {
+   "cell": {"shared": "both", "pick": "drawn", "draw": 3, "steps": 32000, "architecture": "modern"},
+   "stored_weights": 3289936,
+   "rate": 0.002,
+   "loss": 1.003,
+   "seed_sd": 0.0014,
+   "runs": [
+    {
+     "file": "runs/32000/both-drawn-d3-modern-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.004,
+     "seconds": 3380
+    },
+    {
+     "file": "runs/32000/both-drawn-d3-modern-lr0.002-s1.json",
+     "rate": 0.002,
+     "seed": 1,
+     "loss": 1.0014,
+     "seconds": 3531
+    },
+    {
+     "file": "runs/32000/both-drawn-d3-modern-lr0.002-s2.json",
+     "rate": 0.002,
+     "seed": 2,
+     "loss": 1.0036,
+     "seconds": 3710
+    }
+   ]
+  },
+  {
+   "cell": {"shared": "both", "pick": "drawn", "draw": 4, "steps": 32000, "architecture": "modern"},
+   "stored_weights": 3289936,
+   "rate": 0.002,
+   "loss": 1.0011,
+   "seed_sd": 0.0006,
+   "runs": [
+    {
+     "file": "runs/32000/both-drawn-d4-modern-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.0004,
+     "seconds": 3620
+    },
+    {
+     "file": "runs/32000/both-drawn-d4-modern-lr0.002-s1.json",
+     "rate": 0.002,
+     "seed": 1,
+     "loss": 1.0014,
+     "seconds": 3580
+    },
+    {
+     "file": "runs/32000/both-drawn-d4-modern-lr0.002-s2.json",
+     "rate": 0.002,
+     "seed": 2,
+     "loss": 1.0014,
+     "seconds": 3614
+    }
    ]
   },
   {

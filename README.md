@@ -44,6 +44,13 @@ arithmetic per token with 3.3 million and reaches 1.001, so halving the stored w
 costs 0.019 on average and at least 0.015 at every seed. Dropping to four modules costs 0.058 against that full model
 and narrowing to width 184 costs 0.031.
 
+Rounds five to eight replaced the mod map by four fixed maps drawn at random, at equal
+stored weights. Two are worse than the mod map at every seed, by 0.020 and 0.011, and two
+are level with it (0.002 above and 0.0001 below); none is separated from it on the better
+side. Across the five maps the loss has a standard deviation of 0.009, against 0.0015 on
+average across the training seeds of one map. Every map trained at the mod map's learning
+rate.
+
 The full write-up, with every run, is in [report.md](report.md).
 
 ## A second track: fitting a bank to a trained model

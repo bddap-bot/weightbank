@@ -92,8 +92,14 @@ choosing a chunk per token costs loss against a plain model and against fixed sh
 same weights, and fixed sharing is the only arrangement here that beats a plain model of
 equal storage.
 
-The loop described below has since run four rounds at the long budget; the cells they
-tried are the stars on the chart. The fourth is the equal-compute pair above. A low-rank correction per module on one shared chunk does
+The loop described below has since run eight rounds at the long budget; the cells they
+tried are the stars on the chart. The fourth is the equal-compute pair above. Rounds 5
+to 8 trained four fixed maps drawn at random beside the mod map, in the modern architecture
+at equal stored weights: two are worse than the mod map at every seed, by 0.020 and 0.011,
+and two are level with it (0.002 above and 0.0001 below on average), so at the mod map's
+learning rate which module uses which chunk matters, by more than the training seed does,
+and no drawn map is separated from the mod map on the better side (the section "Fixed maps"
+has each map). A low-rank correction per module on one shared chunk does
 not beat a second chunk at equal stored weights. Rounds 2 and 3 took the fixed map, eight
 modules reusing four chunks with no router, into a modern transformer (rotary positions,
 root-mean-square norms, a gated feed-forward) and set it against two plain models. The
@@ -156,7 +162,8 @@ are drawn side by side so that none hides another, which the chart notes under i
 Points are means of three seeds. A star is a cell with three seeds at this budget beyond
 those of the first two experiments, tried by the loop described next; it is drawn just
 right of its stored weights so that it hides no point of equal size. The two lines and the
-other points are the classic architecture; the four stars of the modern architecture are
+other points are the classic architecture; the four small stars are the maps drawn at
+random, set just left of the shared modern model they are compared with, and the four large stars of the modern architecture are
 read against one another, not against the lines: at about 3.3 million stored weights the
 shared model lowest, the plain model narrowed to width 184 above it and the plain model of
 four modules highest, and at 6.4 million the plain model of eight modules at full width,
@@ -308,6 +315,25 @@ thing that differs.
 {{maps}}
 
 {{map-spread}}
+
+At this learning rate the map matters, and by more than the training seed does: the five
+maps' means, the mod map's among them, have a standard deviation of 0.0087, against 0.0015
+on average across the three seeds of one map. The hypothesis that the mod map beats a map
+drawn at random stays open by its own rule, because two of the four drawn maps are not
+separated from it. Draws 1 and 2 are worse than the mod map at every seed, by 0.020 and
+0.011. Draws 3 and 4 are level with it, 0.002 above and 0.0001 below on average; each is
+below it at seed 1 alone, the mod map's own worst seed. No drawn map is separated from the
+mod map on the better side. The two that lose each put three pairs of neighbouring modules on one chunk, and the
+two that are level put two; the mod map puts none. Four draws cannot separate that from the
+other ways the maps differ, such as how unevenly they load the chunks (draw 4 puts four
+modules on one chunk and is level) or which modules share with the first and the last. Nor
+do they separate the map from the learning rate: every map trained at the rate chosen for
+the mod map, and a map that loses might lose less at a rate of its own. Draw 4 is the one
+draw whose first attempt left a chunk unused and was drawn again. Four draws are a small
+sample of the 1,701 distinct ways eight modules can use all of four chunks. Sixteen modules
+over the same four chunks, where a drawn map can differ from the mod map in more places, is
+in the ledger as an open hypothesis (`the-map-matters-more-with-more-modules`) and has no
+runs.
 
 ### Every cell
 

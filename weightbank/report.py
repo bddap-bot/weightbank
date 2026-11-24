@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import textwrap
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -83,6 +84,8 @@ assert COLORS.keys() == MARKERS.keys() == set(PICKING)
 LATER_DODGE = 9
 LATER_COLORS = ("#e6ab02", "#a6761d", "#66a61e", "#b3261e", "#1f3a8a", "#0e9aa7", "#7a3b8f", "#d4578f", "#5b6b2f")
 DRAW_DODGE = -8
+DRAW_CLEAR = 3
+LEGEND_WRAP = 76
 LAST_STRETCHES = (2000, 500)
 LEGEND_COLUMNS = 2
 
@@ -927,7 +930,7 @@ def memory_table(ledger: Ledger, measured: dict[str, memory.Memory], rows: Seque
 
 
 def panel(
-    axes: Axes, budget: Budget, later: Sequence[Mark], ledger: Ledger, low: float, high: float, annotate: bool
+    axes: Axes, budget: Budget, later: Sequence[Mark], ledger: Ledger, low: float, high: float, fan: bool
 ) -> None:
     summaries = budget.summaries
     axes.set_facecolor(SURFACE)
@@ -996,14 +999,14 @@ def panel(
                 yerr=[[mean - min(losses)], [max(losses) - mean]],
                 color=mark.color,
                 marker="*",
-                markersize=9 if grouped else 14,
+                markersize=11 if grouped else 14,
                 markeredgecolor=SURFACE,
                 capsize=3 if grouped else 5,
                 linewidth=1 if grouped else 1.5,
                 linestyle="none",
                 label=mark.label if index == 0 else None,
                 transform=axes.transData
-                + ScaledTranslation((LATER_DODGE + grouped * DRAW_DODGE * (index + 1)) / 72, 0, axes.figure.dpi_scale_trans),
+                + ScaledTranslation((LATER_DODGE + grouped * DRAW_DODGE * (index + DRAW_CLEAR if fan else 1)) / 72, 0, axes.figure.dpi_scale_trans),
                 zorder=5,
             )
     visible = [loss for summary in summaries.values() if low <= summary.stored / 1e6 <= high for loss in summary.losses]
@@ -1011,11 +1014,10 @@ def panel(
     margin = 0.08 * (max(visible) - min(visible))
     axes.set_xlim(low, high)
     axes.set_ylim(min(visible) - margin, max(visible) + margin)
-    if annotate:
-        for chunks, name in FIXED_MAP.items():
-            summary = summaries[name]
-            if low <= summary.stored / 1e6 <= high:
-                axes.annotate(str(chunks), (summary.stored / 1e6, summary.loss), xytext=(DODGE.get(name, 0) - 9, -4), textcoords="offset points", color=INK, fontsize=10, ha="right")
+    for chunks, name in FIXED_MAP.items():
+        summary = summaries[name]
+        if low <= summary.stored / 1e6 <= high:
+            axes.annotate(str(chunks), (summary.stored / 1e6, summary.loss), xytext=(DODGE.get(name, 0) - 9, -4), textcoords="offset points", color=INK, fontsize=10, ha="right")
     ticks = [tick for tick in (1, 2, 3, 4, 5, 6) if low <= tick <= high]
     axes.set_xticks(ticks, [str(tick) for tick in ticks])
     axes.set_xticks([], minor=True)
@@ -1032,8 +1034,8 @@ def panel(
 def chart(budget: Budget, ledger: Ledger) -> None:
     later = marks(ledger, later_cells(ledger, budget.steps))
     figure, (whole, detail) = plt.subplots(1, 2, figsize=(13, 6.4), dpi=160, facecolor=SURFACE, width_ratios=(1, 1.25))
-    panel(whole, budget, later, ledger, 0.85, 7.4, annotate=True)
-    panel(detail, budget, later, ledger, 3.0, 7.0, annotate=True)
+    panel(whole, budget, later, ledger, 0.85, 7.4, fan=False)
+    panel(detail, budget, later, ledger, 3.0, 7.0, fan=True)
     for axes in (whole, detail):
         axes.set_ylabel("validation loss (nats per byte)", color=MUTED)
     whole.set_title("every size", color=MUTED, fontsize=10, loc="left")
@@ -1046,20 +1048,22 @@ def chart(budget: Budget, ledger: Ledger) -> None:
         ha="left",
     )
     handles, labels = whole.get_legend_handles_labels()
+    labels = [textwrap.fill(label, LEGEND_WRAP) for label in labels]
+    lines = sum(label.count("\n") + 1 for label in labels)
     architecture = ledger.axis(ARCHITECTURE)
-    figure.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.05), ncol=LEGEND_COLUMNS, frameon=False, labelcolor=INK, fontsize=9)
+    figure.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.07), ncol=LEGEND_COLUMNS, frameon=False, labelcolor=INK, fontsize=9)
     figure.text(
         0.5,
         0.008,
-        "The fixed map at 4 chunks and the three points with both kinds picked per token store the same weights to within 1.2% and are drawn side by side;"
-        " a star is drawn just right of its stored weights.\n"
+        "The fixed map at 4 chunks and the three points with both kinds picked per token store the same weights to within 1.2% and are drawn side by side.\n"
+        "A star is drawn just right of its stored weights; in the enlarged panel the small stars of several draws are spread out to its left, in the order the legend names them.\n"
         f"Lines and every point whose label names no architecture are the {architecture.words[architecture.default]};"
         " stars that name another architecture are compared with one another.",
         color=MUTED,
         fontsize=9,
         ha="center",
     )
-    figure.tight_layout(rect=(0, 0.075 + 0.03 * math.ceil(len(handles) / LEGEND_COLUMNS), 1, 0.96))
+    figure.tight_layout(rect=(0, 0.095 + 0.028 * math.ceil(lines / LEGEND_COLUMNS), 1, 0.96))
     figure.savefig(CHART, facecolor=SURFACE)
     plt.close(figure)
     lead = lead_cells(ledger, budget.steps)

@@ -100,8 +100,14 @@ choosing a chunk per token costs loss against a plain model and against fixed sh
 same weights, and fixed sharing is the only arrangement here that beats a plain model of
 equal storage.
 
-The loop described below has since run four rounds at the long budget; the cells they
-tried are the stars on the chart. The fourth is the equal-compute pair above. A low-rank correction per module on one shared chunk does
+The loop described below has since run eight rounds at the long budget; the cells they
+tried are the stars on the chart. The fourth is the equal-compute pair above. Rounds 5
+to 8 trained four fixed maps drawn at random beside the mod map, in the modern architecture
+at equal stored weights: two are worse than the mod map at every seed, by 0.020 and 0.011,
+and two are level with it (0.002 above and 0.0001 below on average), so at the mod map's
+learning rate which module uses which chunk matters, by more than the training seed does,
+and no drawn map is separated from the mod map on the better side (the section "Fixed maps"
+has each map). A low-rank correction per module on one shared chunk does
 not beat a second chunk at equal stored weights. Rounds 2 and 3 took the fixed map, eight
 modules reusing four chunks with no router, into a modern transformer (rotary positions,
 root-mean-square norms, a gated feed-forward) and set it against two plain models. The
@@ -164,7 +170,8 @@ are drawn side by side so that none hides another, which the chart notes under i
 Points are means of three seeds. A star is a cell with three seeds at this budget beyond
 those of the first two experiments, tried by the loop described next; it is drawn just
 right of its stored weights so that it hides no point of equal size. The two lines and the
-other points are the classic architecture; the four stars of the modern architecture are
+other points are the classic architecture; the four small stars are the maps drawn at
+random, set just left of the shared modern model they are compared with, and the four large stars of the modern architecture are
 read against one another, not against the lines: at about 3.3 million stored weights the
 shared model lowest, the plain model narrowed to width 184 above it and the plain model of
 four modules highest, and at 6.4 million the plain model of eight modules at full width,
@@ -223,7 +230,7 @@ hand in the ledger; statuses are computed.
 | 1 | halving-stored-weights-costs-loss-at-equal-compute | At equal compute in the modern architecture, halving the stored weights costs loss: the plain model of eight modules at width 256, which owns all eight chunks of each kind, reaches a lower loss than eight modules sharing four chunks through the fixed map. The two multiply by the same number of weights per token; the shared model stores 3,289,936 weights, 51% of the plain model's 6,444,192. Supported means sharing has a price at equal compute, and the differences are its size; refuted would mean the shared model reaches the lower loss with half the weights; open, that three seeds do not separate the two. | `32000/modern` below `32000/both-modern`: -0.0154, -0.0217, -0.0209 | **supported** |
 | 2 | reuse-survives-the-modern-architecture | The gain from reuse survives the modern architecture: with rotary positions, root-mean-square norms and a gated feed-forward, eight modules reusing four chunks still beat the plain model of four modules. | `32000/both-modern` below `32000/plain-l4-modern`: -0.0425, -0.0422, -0.0326 | **supported** |
 | 2 | sharing-beats-a-narrowed-modern-model | In the modern architecture the shared model beats a plain model that keeps all eight modules and stores no fewer weights: eight modules reusing four chunks through the fixed map reach a lower loss than the plain model narrowed to width 184, the width nearest to the shared model's stored weights among multiples of 8, which stores 70,088 more weights (2.1%). | `32000/both-modern` below `32000/plain-w184-modern`: -0.0115, -0.0097, -0.0152 | **supported** |
-| 2 | the-mod-map-beats-a-map-drawn-at-random | Which module uses which chunk matters: in the modern architecture the mod map, where every chunk serves two modules four apart, reaches a lower loss than a fixed map drawn at random over the same four chunks. A drawn map uses every chunk, so it stores exactly the mod map's weights, and it trains at the mod map's learning rate. One comparison per drawn map: supported means every drawn map is worse, refuted that every one is better, and open that the maps do not all fall on one side by more than the spread of training seeds. | `32000/both-modern` below `32000/both-drawn-d1-modern`: not run<br>`32000/both-modern` below `32000/both-drawn-d2-modern`: not run<br>`32000/both-modern` below `32000/both-drawn-d3-modern`: not run<br>`32000/both-modern` below `32000/both-drawn-d4-modern`: not run | **open** |
+| 2 | the-mod-map-beats-a-map-drawn-at-random | Which module uses which chunk matters: in the modern architecture the mod map, where every chunk serves two modules four apart, reaches a lower loss than a fixed map drawn at random over the same four chunks. A drawn map uses every chunk, so it stores exactly the mod map's weights, and it trains at the mod map's learning rate. One comparison per drawn map: supported means every drawn map is worse, refuted that every one is better, and open that the maps do not all fall on one side by more than the spread of training seeds. | `32000/both-modern` below `32000/both-drawn-d1-modern`: -0.0210, -0.0175, -0.0203<br>`32000/both-modern` below `32000/both-drawn-d2-modern`: -0.0135, -0.0099, -0.0104<br>`32000/both-modern` below `32000/both-drawn-d3-modern`: -0.0051, +0.0030, -0.0033<br>`32000/both-modern` below `32000/both-drawn-d4-modern`: -0.0015, +0.0030, -0.0011 | **open** |
 | 3 | picking-lock-in | A per-input pick loses to the fixed map because routers lock in early, near-random picks: with each module frozen to its router's most common pick after a quarter of training, the model still loses to the fixed map of module i to chunk i mod N. | `32000/both` below `32000/both-frozen-picks`: not run | **open** |
 | 3 | picking-chase | A per-input pick loses because chunks and router chase each other: holding the router's weights still after a quarter of training beats letting it learn throughout. | `32000/both-stopped-router` below `32000/both-routed`: not run | **open** |
 | 3 | picking-worse-function | A per-input pick loses because mixing chunks token by token is a worse function than one chunk per module, even under a router that no longer moves: frozen picks beat a stopped router. | `32000/both-frozen-picks` below `32000/both-stopped-router`: not run | **open** |
@@ -308,6 +315,46 @@ halving-stored-weights-costs-loss-at-equal-compute (priority 1) is the highest-p
 
 In plain words: this is the pair to judge sharing by when compute is what is held equal. Both models run eight modules at width 256 and multiply by the same number of weights per token; the plain one owns all eight chunks of each kind and stores 6,444,192 weights, the shared one reuses four and stores 3,289,936, 51% as many. The plain model reaches 0.9819 and the shared one 1.0012, so halving the stored weights costs 0.0193 nats per byte on average, at every seed (0.0154, 0.0217, 0.0209), where each model's seeds have a standard deviation of 0.002 to 0.003. The price is small beside what the same halving costs a plain model that gives up modules or width: four modules at width 256 reach 1.0403, 0.0584 above the full plain model, and eight modules at width 184 reach 1.0133, 0.0314 above it. What the round does not show: the same pair at another size, bank size, budget or dataset, or the classic pair under one protocol (there the full model reads 0.9833 and the shared one 1.0134, 0.0301 apart). The plain model's best rate is 0.001 and the shared model's 0.002, each chosen on seed 0; the plain model at 0.002 reads 0.9852 at seed 0, 0.0017 above its run at 0.001.
 
+### Round 5: the-mod-map-beats-a-map-drawn-at-random
+
+the-mod-map-beats-a-map-drawn-at-random (priority 2) is the highest-priority open hypothesis with an unfinished comparison that fits 12 GPU-hours; the cheapest is 32000/both-modern against 32000/both-drawn-d1-modern, estimated at 2.9 GPU-hours.
+
+32000/both-modern reached 1.0012 nats per byte with 3,289,936 stored weights at rate 0.002; 32000/both-drawn-d1-modern reached 1.0208 with 3,289,936 at rate 0.002. Lower minus higher by seed: -0.0210, -0.0175, -0.0203. No status changed.
+
+3 runs, 2.8 GPU-hours of training against an estimate of 2.9; ledger rows written: `32000/both-drawn-d1-modern`.
+
+A drawn map is fixed for the whole run and the same at every training seed: each of the eight modules' chunks is drawn uniformly from a generator seeded with the draw's number alone, apart from the training seed, and a draw that leaves a chunk unused is thrown away whole and drawn again, so every map uses all four chunks and stores exactly the mod map's 3,289,936 weights; an unused chunk never has to be counted. It trains at the mod map's learning rate, 0.002, with no sweep of its own. Draw 1 is the map 0 1 1 2 2 2 3 1, numbering chunks in order of first use; it is worse than the mod map (0 1 2 3 0 1 2 3) at every seed, by 0.0196 on average: 1.0208 against 1.0012.
+
+### Round 6: the-mod-map-beats-a-map-drawn-at-random
+
+the-mod-map-beats-a-map-drawn-at-random (priority 2) is the highest-priority open hypothesis with an unfinished comparison that fits 12 GPU-hours; the cheapest is 32000/both-modern against 32000/both-drawn-d2-modern, estimated at 2.8 GPU-hours.
+
+32000/both-modern reached 1.0012 nats per byte with 3,289,936 stored weights at rate 0.002; 32000/both-drawn-d2-modern reached 1.0125 with 3,289,936 at rate 0.002. Lower minus higher by seed: -0.0135, -0.0099, -0.0104. No status changed.
+
+3 runs, 2.9 GPU-hours of training against an estimate of 2.8; ledger rows written: `32000/both-drawn-d2-modern`.
+
+A drawn map is fixed for the whole run and the same at every training seed: each of the eight modules' chunks is drawn uniformly from a generator seeded with the draw's number alone, apart from the training seed, and a draw that leaves a chunk unused is thrown away whole and drawn again, so every map uses all four chunks and stores exactly the mod map's 3,289,936 weights; an unused chunk never has to be counted. It trains at the mod map's learning rate, 0.002, with no sweep of its own. Draw 2 is the map 0 0 1 1 0 2 2 3, numbering chunks in order of first use; it is worse than the mod map at every seed, by 0.0113 on average: 1.0125 against 1.0012.
+
+### Round 7: the-mod-map-beats-a-map-drawn-at-random
+
+the-mod-map-beats-a-map-drawn-at-random (priority 2) is the highest-priority open hypothesis with an unfinished comparison that fits 12 GPU-hours; the cheapest is 32000/both-modern against 32000/both-drawn-d3-modern, estimated at 2.8 GPU-hours.
+
+32000/both-modern reached 1.0012 nats per byte with 3,289,936 stored weights at rate 0.002; 32000/both-drawn-d3-modern reached 1.0030 with 3,289,936 at rate 0.002. Lower minus higher by seed: -0.0051, +0.0030, -0.0033. No status changed.
+
+3 runs, 3 GPU-hours of training against an estimate of 2.8; ledger rows written: `32000/both-drawn-d3-modern`.
+
+A drawn map is fixed for the whole run and the same at every training seed: each of the eight modules' chunks is drawn uniformly from a generator seeded with the draw's number alone, apart from the training seed, and a draw that leaves a chunk unused is thrown away whole and drawn again, so every map uses all four chunks and stores exactly the mod map's 3,289,936 weights; an unused chunk never has to be counted. It trains at the mod map's learning rate, 0.002, with no sweep of its own. Draw 3 is the map 0 1 2 1 1 0 0 3, numbering chunks in order of first use; it is level with the mod map: 1.0030 against 1.0012, 0.0018 above on average with one seed of three below, inside the mod map's seed spread of 0.0029.
+
+### Round 8: the-mod-map-beats-a-map-drawn-at-random
+
+the-mod-map-beats-a-map-drawn-at-random (priority 2) is the highest-priority open hypothesis with an unfinished comparison that fits 12 GPU-hours; the cheapest is 32000/both-modern against 32000/both-drawn-d4-modern, estimated at 2.8 GPU-hours.
+
+32000/both-modern reached 1.0012 nats per byte with 3,289,936 stored weights at rate 0.002; 32000/both-drawn-d4-modern reached 1.0011 with 3,289,936 at rate 0.002. Lower minus higher by seed: -0.0015, +0.0030, -0.0011. No status changed.
+
+3 runs, 3 GPU-hours of training against an estimate of 2.8; ledger rows written: `32000/both-drawn-d4-modern`.
+
+A drawn map is fixed for the whole run and the same at every training seed: each of the eight modules' chunks is drawn uniformly from a generator seeded with the draw's number alone, apart from the training seed, and a draw that leaves a chunk unused is thrown away whole and drawn again, so every map uses all four chunks and stores exactly the mod map's 3,289,936 weights; an unused chunk never has to be counted. It trains at the mod map's learning rate, 0.002, with no sweep of its own. Draw 4 is the map 0 1 2 3 1 1 1 0, numbering chunks in order of first use; it is level with the mod map: 1.0011 against 1.0012, with one seed of three below. With this round all four drawn maps have run, so five distinct maps have been trained, the mod map among them. In plain words: which module uses which chunk matters, and by more than the training seed does. The five maps' mean losses run from 1.0011 to 1.0208, a standard deviation across maps of 0.0087, where the three training seeds of one map have a standard deviation of 0.0015 on average (0.0006 to 0.0029). The hypothesis stays open by its own rule, because two of the four drawn maps are not separated from the mod map: two are worse at every seed and two are level, each below it at seed 1 alone. The two that lose each put three pairs of neighbouring modules on one chunk and the two that are level put two; the mod map puts none. Four draws do not separate that from how unevenly a map loads its chunks, or from which modules share with the first and the last, or from the learning rate, which was chosen for the mod map and used for every map. What the rounds do not show: more than four draws, another bank size, more modules over the same bank (an open hypothesis in the ledger), or a map chosen on purpose.
+
 ### The modern cells beside the classic architecture
 
 Each cell of the modern architecture that has three seeds at the long budget, beside the
@@ -320,6 +367,10 @@ learning rate.
 
 | cell | stored weights | mean loss | classic counterpart | its stored weights | its mean loss | cell minus classic, by seed | mean |
 |---|---|---|---|---|---|---|---|
+| `32000/both-drawn-d1-modern` | 3,289,936 | 1.0208 | none with runs |  |  |  |  |
+| `32000/both-drawn-d2-modern` | 3,289,936 | 1.0125 | none with runs |  |  |  |  |
+| `32000/both-drawn-d3-modern` | 3,289,936 | 1.0030 | none with runs |  |  |  |  |
+| `32000/both-drawn-d4-modern` | 3,289,936 | 1.0011 | none with runs |  |  |  |  |
 | `32000/both-modern` | 3,289,936 | 1.0012 | `32000/both` | 3,360,512 | 1.0134 | -0.0133, -0.0092, -0.0142 | -0.0122 |
 | `32000/modern` | 6,444,192 | 0.9819 | `32000/full` | 6,515,456 | 0.9833 | +0.0016, -0.0016, -0.0043 | -0.0014 |
 | `32000/plain-l4-modern` | 3,287,888 | 1.0403 | `32000/plain-l4` | 3,356,416 | 1.0320 | +0.0097, +0.0132, +0.0020 | +0.0083 |
@@ -389,8 +440,32 @@ thing that differs.
 
 | cell | chunk of each module, first to last | modules on each chunk | neighbouring modules on one chunk | seed 0 | seed 1 | seed 2 | mean | seed sd | minus the mod map, by seed | mean difference |
 |---|---|---|---|---|---|---|---|---|---|---|
+| `32000/both-modern` | 0 1 2 3 0 1 2 3 | 2 2 2 2 | 0 | 0.9989 | 1.0044 | 1.0003 | 1.0012 | 0.0029 |  |  |
+| `32000/both-drawn-d1-modern` | 0 1 1 2 2 2 3 1 | 1 3 3 1 | 3 | 1.0199 | 1.0219 | 1.0206 | 1.0208 | 0.0010 | +0.0210, +0.0175, +0.0203 | +0.0196 |
+| `32000/both-drawn-d2-modern` | 0 0 1 1 0 2 2 3 | 3 2 2 1 | 3 | 1.0124 | 1.0143 | 1.0107 | 1.0125 | 0.0018 | +0.0135, +0.0099, +0.0104 | +0.0113 |
+| `32000/both-drawn-d3-modern` | 0 1 2 1 1 0 0 3 | 3 3 1 1 | 2 | 1.0040 | 1.0014 | 1.0036 | 1.0030 | 0.0014 | +0.0051, -0.0030, +0.0033 | +0.0018 |
+| `32000/both-drawn-d4-modern` | 0 1 2 3 1 1 1 0 | 2 4 1 1 | 2 | 1.0004 | 1.0014 | 1.0014 | 1.0011 | 0.0006 | +0.0015, -0.0030, +0.0011 | -0.0001 |
 
-No map but the mod map has runs.
+Beside `32000/both-modern`: 5 distinct maps were trained, the mod map among them. Their mean losses run from 1.0011 to 1.0208, a standard deviation across maps of 0.0087 (0.0089, 0.0091, 0.0085 at training seeds 0, 1, 2 taken one at a time). Across the 3 training seeds of one map the standard deviation is 0.0015 on average, from 0.0006 to 0.0029.
+
+At this learning rate the map matters, and by more than the training seed does: the five
+maps' means, the mod map's among them, have a standard deviation of 0.0087, against 0.0015
+on average across the three seeds of one map. The hypothesis that the mod map beats a map
+drawn at random stays open by its own rule, because two of the four drawn maps are not
+separated from it. Draws 1 and 2 are worse than the mod map at every seed, by 0.020 and
+0.011. Draws 3 and 4 are level with it, 0.002 above and 0.0001 below on average; each is
+below it at seed 1 alone, the mod map's own worst seed. No drawn map is separated from the
+mod map on the better side. The two that lose each put three pairs of neighbouring modules on one chunk, and the
+two that are level put two; the mod map puts none. Four draws cannot separate that from the
+other ways the maps differ, such as how unevenly they load the chunks (draw 4 puts four
+modules on one chunk and is level) or which modules share with the first and the last. Nor
+do they separate the map from the learning rate: every map trained at the rate chosen for
+the mod map, and a map that loses might lose less at a rate of its own. Draw 4 is the one
+draw whose first attempt left a chunk unused and was drawn again. Four draws are a small
+sample of the 1,701 distinct ways eight modules can use all of four chunks. Sixteen modules
+over the same four chunks, where a drawn map can differ from the mod map in more places, is
+in the ledger as an open hypothesis (`the-map-matters-more-with-more-modules`) and has no
+runs.
 
 ### Every cell
 
@@ -404,6 +479,10 @@ where three seeds share a rate.
 | `32000/both-c1-r24` | both | fixed | 0 | 1 | 24 | 8 | 256 | 32000 | classic | 1,780,736 | 0.002 | 1.0649 | 0.0008 | 5 |
 | `32000/both-c2` | both | fixed | 0 | 2 | 0 | 8 | 256 | 32000 | classic | 1,783,040 | 0.001 | 1.0583 | 0.0039 | 5 |
 | `32000/both-c8` | both | fixed | 0 | 8 | 0 | 8 | 256 | 32000 | classic | 6,515,456 | 0.002 | 0.9841 | 0.0008 | 3 |
+| `32000/both-drawn-d1-modern` | both | drawn | 1 | 4 | 0 | 8 | 256 | 32000 | modern | 3,289,936 | 0.002 | 1.0208 | 0.0010 | 3 |
+| `32000/both-drawn-d2-modern` | both | drawn | 2 | 4 | 0 | 8 | 256 | 32000 | modern | 3,289,936 | 0.002 | 1.0125 | 0.0018 | 3 |
+| `32000/both-drawn-d3-modern` | both | drawn | 3 | 4 | 0 | 8 | 256 | 32000 | modern | 3,289,936 | 0.002 | 1.0030 | 0.0014 | 3 |
+| `32000/both-drawn-d4-modern` | both | drawn | 4 | 4 | 0 | 8 | 256 | 32000 | modern | 3,289,936 | 0.002 | 1.0011 | 0.0006 | 3 |
 | `32000/both` | both | fixed | 0 | 4 | 0 | 8 | 256 | 32000 | classic | 3,360,512 | 0.002 | 1.0134 | 0.0012 | 4 |
 | `32000/both-modern` | both | fixed | 0 | 4 | 0 | 8 | 256 | 32000 | modern | 3,289,936 | 0.002 | 1.0012 | 0.0029 | 4 |
 | `32000/both-routed-argmax` | both | argmax | 0 | 4 | 0 | 8 | 256 | 32000 | classic | 3,394,952 | 0.002 | 1.0459 | 0.0021 | 5 |
@@ -970,6 +1049,18 @@ Both experiments and the learning-rate sweep, from the run files.
 | both-c8 | 0 | 32,000 | 0.002 | 6,515,456 | 0.9845 | 2059 |
 | both-c8 | 1 | 32,000 | 0.002 | 6,515,456 | 0.9847 | 2103 |
 | both-c8 | 2 | 32,000 | 0.002 | 6,515,456 | 0.9832 | 2487 |
+| both-drawn-d1-modern | 0 | 32,000 | 0.002 | 3,289,936 | 1.0199 | 3390 |
+| both-drawn-d1-modern | 1 | 32,000 | 0.002 | 3,289,936 | 1.0219 | 3373 |
+| both-drawn-d1-modern | 2 | 32,000 | 0.002 | 3,289,936 | 1.0206 | 3464 |
+| both-drawn-d2-modern | 0 | 32,000 | 0.002 | 3,289,936 | 1.0124 | 3366 |
+| both-drawn-d2-modern | 1 | 32,000 | 0.002 | 3,289,936 | 1.0143 | 3456 |
+| both-drawn-d2-modern | 2 | 32,000 | 0.002 | 3,289,936 | 1.0107 | 3456 |
+| both-drawn-d3-modern | 0 | 32,000 | 0.002 | 3,289,936 | 1.0040 | 3380 |
+| both-drawn-d3-modern | 1 | 32,000 | 0.002 | 3,289,936 | 1.0014 | 3531 |
+| both-drawn-d3-modern | 2 | 32,000 | 0.002 | 3,289,936 | 1.0036 | 3710 |
+| both-drawn-d4-modern | 0 | 32,000 | 0.002 | 3,289,936 | 1.0004 | 3620 |
+| both-drawn-d4-modern | 1 | 32,000 | 0.002 | 3,289,936 | 1.0014 | 3580 |
+| both-drawn-d4-modern | 2 | 32,000 | 0.002 | 3,289,936 | 1.0014 | 3614 |
 | both | 0 | 32,000 | 0.001 | 3,360,512 | 1.0167 | 1868 |
 | both | 0 | 32,000 | 0.002 | 3,360,512 | 1.0122 | 1852 |
 | both | 1 | 32,000 | 0.002 | 3,360,512 | 1.0136 | 1743 |
