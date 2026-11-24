@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import random
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
@@ -26,9 +27,40 @@ class Own:
     pass
 
 
+class Layout(Enum):
+    MOD = "mod"
+    ENDS = "ends"
+
+
+@dataclass(frozen=True)
+class Drawn:
+    draw: int
+
+    def __post_init__(self) -> None:
+        if self.draw < 1:
+            raise ValueError("a draw is numbered from 1")
+
+
 @dataclass(frozen=True)
 class Fixed:
     chunks: int
+    layout: Layout | Drawn = Layout.MOD
+
+    def map(self, modules: int) -> tuple[int, ...]:
+        if self.layout is Layout.MOD:
+            return tuple(module % self.chunks for module in range(modules))
+        if self.chunks > modules:
+            raise ValueError(f"{modules} modules cannot use all of {self.chunks} chunks")
+        if self.layout is Layout.ENDS:
+            if self.chunks < 3:
+                raise ValueError("own ends and a middle need at least 3 chunks")
+            middle = self.chunks - 2
+            return (0, *(1 + module % middle for module in range(modules - 2)), self.chunks - 1)
+        source = random.Random(self.layout.draw)
+        while True:
+            drawn = tuple(int(source.random() * self.chunks) for _ in range(modules))
+            if len(set(drawn)) == self.chunks:
+                return drawn
 
 
 class Settled(Enum):
@@ -260,6 +292,7 @@ class Bank(nn.Module, Generic[Stored]):
             self.corrections = tuple(Correction(first, second, config.rank) for _ in range(config.modules))
             self.registered_corrections = nn.ModuleList(self.corrections)
         self.settled_picks: list[int] | None = None
+        self.map = sharing.map(config.modules) if isinstance(sharing, Fixed) else None
 
     def correction(self, module: int) -> Correction | None:
         return None if self.corrections is None else self.corrections[module]
@@ -280,8 +313,8 @@ class Bank(nn.Module, Generic[Stored]):
         if self.router is not None:
             picks: Picks = self.router(x, module)
             return picks
-        if isinstance(self.sharing, Fixed):
-            return fixed(x, module % self.sharing.chunks, self.sharing.chunks)
+        if self.map is not None:
+            return fixed(x, self.map[module], len(self.chunks))
         return None
 
 

@@ -13,8 +13,11 @@ import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.transforms import ScaledTranslation
 
+from weightbank import memory
 from weightbank.configs import (
     ARCHITECTURE,
+    BOTH_ROUTED,
+    DRAW,
     FIXED_MAP,
     FULL,
     KEYS,
@@ -29,14 +32,19 @@ from weightbank.configs import (
     ROUTER_VARIANTS,
     SHALLOWER,
     WIDTH,
+    model_config,
     named,
+    other_map,
     plain_words,
+    rate_source,
 )
-from weightbank.ledger import ABANDONED, SEEDS, STEPS, Ledger, Row
+from weightbank.ledger import ABANDONED, SEEDS, STEPS, Cell, Ledger, Row
+from weightbank.model import Fixed
 from weightbank.sweep import (
     FIRST_RATE,
     FIRST_STEPS,
     LONG_STEPS,
+    SHORT_RATES,
     SWEEP_SEED,
     Sweep,
     finished,
@@ -44,14 +52,14 @@ from weightbank.sweep import (
     lowest,
     short_sweep,
 )
-from weightbank.train import LOG_WINDOWS, RUNS, PickStats, Plan, Run
+from weightbank.train import BATCH, EVAL_BATCH, LOG_WINDOWS, RUNS, PickStats, Plan, Run
 
-ARMS = tuple(name for name in ROUNDS_ONE_AND_TWO if name != OWN_CHUNK)
-RATE_FROM = {OWN_CHUNK: FULL}
+ARMS = tuple(name for name in ROUNDS_ONE_AND_TWO if rate_source(name) == name)
 
 TEMPLATE = Path("report.in.md")
 REPORT = Path("report.md")
 CHART = Path("chart.png")
+CURVES = Path("curves.png")
 
 SURFACE = "#fcfcfb"
 INK = "#0b0b0b"
@@ -73,7 +81,9 @@ DODGE = {NO_ROUTER: -9, "both-routed": 0, NOISE_FREE: 9, KEYS: 18}
 MARKERS = {"ff-routed": "D", "attn-routed": "D", "both-routed": "D", NOISE_FREE: "^", KEYS: "v"}
 assert COLORS.keys() == MARKERS.keys() == set(PICKING)
 LATER_DODGE = 9
-LATER_COLORS = ("#e6ab02", "#a6761d", "#66a61e", "#b3261e", "#1f3a8a", "#0e9aa7", "#7a3b8f")
+LATER_COLORS = ("#e6ab02", "#a6761d", "#66a61e", "#b3261e", "#1f3a8a", "#0e9aa7", "#7a3b8f", "#d4578f", "#5b6b2f")
+DRAW_DODGE = -8
+LAST_STRETCHES = (2000, 500)
 LEGEND_COLUMNS = 2
 
 
@@ -693,7 +703,232 @@ def beside_classic_table(ledger: Ledger, steps: int) -> str:
     )
 
 
-def panel(axes: Axes, budget: Budget, later: Sequence[Row], ledger: Ledger, low: float, high: float, annotate: bool) -> None:
+@dataclass
+class Mark:
+    label: str
+    color: str
+    rows: list[Row]
+
+
+def marks(ledger: Ledger, later: Sequence[Row]) -> list[Mark]:
+    no_draw = ledger.axis(DRAW).default
+    grouped: dict[str, list[Row]] = {}
+    for row in later:
+        grouped.setdefault(ledger.key({**row.cell, DRAW: no_draw}), []).append(row)
+    if len(grouped) > len(LATER_COLORS):
+        raise ValueError(f"{len(grouped)} later cells and {len(LATER_COLORS)} colours to tell them apart")
+    draws = ledger.axis(DRAW).words
+    return [
+        Mark(
+            plain_words(rows[0].cell).replace(draws[rows[0].cell[DRAW]], ", ".join(draws[row.cell[DRAW]] for row in rows)),
+            color,
+            rows,
+        )
+        for rows, color in zip(grouped.values(), LATER_COLORS)
+    ]
+
+
+def chunk_map(cell: Cell) -> tuple[int, ...]:
+    config = model_config(cell)
+    bank = next(bank for bank in (config.feed_forward, config.attention) if isinstance(bank, Fixed))
+    first_use: dict[int, int] = {}
+    return tuple(first_use.setdefault(chunk, len(first_use)) for chunk in bank.map(config.modules))
+
+
+def maps_by_twin(ledger: Ledger, steps: int) -> dict[str, list[Row]]:
+    groups: dict[str, list[Row]] = {}
+    for row in ledger.rows:
+        if row.cell[STEPS] != steps or row.losses is None or not other_map(row.cell):
+            continue
+        twin = ledger.row({**row.cell, PICK: ledger.axis(PICK).default, DRAW: ledger.axis(DRAW).default})
+        if twin is None or twin.losses is None:
+            continue
+        if twin.rate != row.rate:
+            raise ValueError(f"{ledger.key(row.cell)} trained at rate {row.rate}, its mod map at {twin.rate}")
+        groups.setdefault(ledger.key(twin.cell), [twin]).append(row)
+    return groups
+
+
+def maps_table(ledger: Ledger, steps: int) -> str:
+    rows = []
+    for twin, *others in maps_by_twin(ledger, steps).values():
+        assert twin.losses is not None
+        for row in (twin, *others):
+            chunks = chunk_map(row.cell)
+            assert row.losses is not None
+            differences = [ours - theirs for ours, theirs in zip(row.losses, twin.losses, strict=True)]
+            rows.append(
+                [
+                    f"`{ledger.key(row.cell)}`",
+                    " ".join(map(str, chunks)),
+                    " ".join(str(chunks.count(chunk)) for chunk in sorted(set(chunks))),
+                    str(sum(a == b for a, b in zip(chunks, chunks[1:]))),
+                    *(f"{loss:.4f}" for loss in row.losses),
+                    f"{fmean(row.losses):.4f}",
+                    f"{stdev(row.losses):.4f}",
+                    "" if row is twin else ", ".join(f"{difference:+.4f}" for difference in differences),
+                    "" if row is twin else f"{fmean(differences):+.4f}",
+                ]
+            )
+    return table(
+        [
+            "cell",
+            "chunk of each module, first to last",
+            "modules on each chunk",
+            "neighbouring modules on one chunk",
+            *(f"seed {seed}" for seed in SEEDS),
+            "mean",
+            "seed sd",
+            "minus the mod map, by seed",
+            "mean difference",
+        ],
+        rows,
+    )
+
+
+def map_spread(ledger: Ledger, steps: int) -> str:
+    sentences = []
+    for key, rows in maps_by_twin(ledger, steps).items():
+        distinct = {chunk_map(row.cell): row.losses for row in reversed(rows) if row.losses is not None}
+        losses = list(distinct.values())
+        if len(losses) < 2:
+            sentences.append(f"Beside `{key}`: every map trained lays the chunks out as the mod map does.")
+            continue
+        means = [fmean(seeds) for seeds in losses]
+        spreads = [stdev(seeds) for seeds in losses]
+        by_seed = [stdev(seeds[seed] for seeds in losses) for seed in range(len(SEEDS))]
+        sentences.append(
+            f"Beside `{key}`: {len(distinct)} distinct maps were trained, the mod map among them. Their mean losses run from "
+            f"{min(means):.4f} to {max(means):.4f}, a standard deviation across maps of {stdev(means):.4f}"
+            f" ({', '.join(f'{spread:.4f}' for spread in by_seed)} at training seeds {', '.join(map(str, SEEDS))} taken one at a time)."
+            f" Across the {len(SEEDS)} training seeds of one map the standard deviation is {fmean(spreads):.4f} on average,"
+            f" from {min(spreads):.4f} to {max(spreads):.4f}."
+        )
+    return "\n\n".join(sentences) or "No map but the mod map has runs."
+
+
+def lead_cells(ledger: Ledger, steps: int) -> list[Row]:
+    classic = ledger.axis(ARCHITECTURE).default
+    return [row for row in later_cells(ledger, steps) if row.cell[ARCHITECTURE] != classic and not other_map(row.cell)]
+
+
+def runs_of(ledger: Ledger, row: Row) -> list[Run]:
+    rate, steps = row.rate, row.cell[STEPS]
+    assert rate is not None and isinstance(steps, int)
+    return [Plan(ledger.name(row.cell), seed, steps, rate).read() for seed in SEEDS]
+
+
+def run_end_table(ledger: Ledger, names: Sequence[str], first: int, long: int) -> str:
+    rows = []
+    for name in names:
+        row = ledger.row(ledger.parse(name, long))
+        short = finished(short_sweep(name))
+        assert row is not None and short is not None
+        runs = runs_of(ledger, row)
+        (ended,) = [run.validation_loss for run in runs if run.seed == SWEEP_SEED]
+        falls = [fmean(logged(run, long) - logged(run, long - stretch) for run in runs) for stretch in LAST_STRETCHES]
+        rows.append(
+            [
+                f"`{name}`",
+                plain_words(row.cell),
+                f"{min(short.values()):.4f}",
+                f"{ended:.4f}",
+                f"{ended - min(short.values()):+.4f}",
+                *(f"{fall:+.4f}" for fall in falls),
+            ]
+        )
+    return table(
+        [
+            "cell",
+            "in plain words",
+            f"seed {SWEEP_SEED}, stopped at {first:,} steps, best of {len(SHORT_RATES)} rates",
+            f"seed {SWEEP_SEED}, stopped at {long:,} steps",
+            f"what {long // first} times the steps bought",
+            *(f"change over the last {stretch:,} of {long:,} steps, mean of seeds" for stretch in LAST_STRETCHES),
+        ],
+        rows,
+    )
+
+
+def curves(ledger: Ledger, steps: int, lead: Sequence[Mark]) -> None:
+    figure, (whole, end) = plt.subplots(1, 2, figsize=(13, 5.6), dpi=160, facecolor=SURFACE)
+    last = []
+    for mark in lead:
+        (row,) = mark.rows
+        runs = runs_of(ledger, row)
+        at = [int(step) for step, _ in runs[0].curve]
+        mean = [fmean(logged(run, step) for run in runs) for step in at]
+        last += [loss for run in runs for step, loss in run.curve if step >= steps * 3 // 4]
+        for axes in (whole, end):
+            for run in runs:
+                axes.plot(at, [loss for _, loss in run.curve], color=mark.color, linewidth=0.8, alpha=0.35, zorder=2)
+            axes.plot(at, mean, color=mark.color, linewidth=2, label=mark.label, zorder=3)
+    margin = 0.08 * (max(last) - min(last))
+    whole.set_xlim(0, steps)
+    whole.set_ylim(min(last) - margin, min(last) + 0.35)
+    end.set_xlim(steps * 3 // 4, steps)
+    end.set_ylim(min(last) - margin, max(last) + margin)
+    whole.set_title("the whole run", color=MUTED, fontsize=10, loc="left")
+    end.set_title("the last quarter, enlarged", color=MUTED, fontsize=10, loc="left")
+    for axes in (whole, end):
+        axes.set_facecolor(SURFACE)
+        axes.set_xlabel("optimizer steps", color=MUTED)
+        axes.set_ylabel("validation loss (nats per byte)", color=MUTED)
+        axes.grid(color=GRID, linewidth=1)
+        axes.set_axisbelow(True)
+        axes.tick_params(colors=MUTED)
+        for side in ("top", "right"):
+            axes.spines[side].set_visible(False)
+        for side in ("left", "bottom"):
+            axes.spines[side].set_color(GRID)
+    figure.suptitle(
+        f"Validation loss along training, enwik8, {steps:,} steps, logged on the first {LOG_WINDOWS:,} validation windows"
+        f" (heavy line: mean of {len(SEEDS)} seeds; light lines: each seed)",
+        color=INK,
+        fontsize=12,
+        x=0.01,
+        ha="left",
+    )
+    handles, labels = whole.get_legend_handles_labels()
+    figure.legend(handles, labels, loc="lower center", ncol=LEGEND_COLUMNS, frameon=False, labelcolor=INK, fontsize=10)
+    figure.tight_layout(rect=(0, 0.04 + 0.035 * math.ceil(len(handles) / LEGEND_COLUMNS), 1, 0.95))
+    figure.savefig(CURVES, facecolor=SURFACE)
+    plt.close(figure)
+
+
+def mebibytes(size: int) -> str:
+    return f"{size / 2**20:,.0f}"
+
+
+def memory_table(ledger: Ledger, measured: dict[str, memory.Memory], rows: Sequence[Row]) -> str:
+    missing = [ledger.name(row.cell) for row in rows if ledger.name(row.cell) not in measured]
+    if missing:
+        raise ValueError(f"{memory.PATH} has no measurement of {missing}: python -m weightbank.memory {' '.join(missing)}")
+    return table(
+        [
+            "cell",
+            "in plain words",
+            "stored weights",
+            "weights alone, MiB",
+            "inference, 1 window, MiB",
+            f"inference, {EVAL_BATCH} windows, MiB",
+            f"training, {BATCH} windows, MiB",
+        ],
+        [
+            [
+                f"`{ledger.name(row.cell)}`",
+                plain_words(row.cell),
+                f"{row.stored_weights:,}",
+                *(mebibytes(size) for size in vars(measured[ledger.name(row.cell)]).values()),
+            ]
+            for row in rows
+        ],
+    )
+
+
+def panel(
+    axes: Axes, budget: Budget, later: Sequence[Mark], ledger: Ledger, low: float, high: float, annotate: bool
+) -> None:
     summaries = budget.summaries
     axes.set_facecolor(SURFACE)
     axes.set_xscale("log")
@@ -749,28 +984,30 @@ def panel(axes: Axes, budget: Budget, later: Sequence[Row], ledger: Ledger, low:
             transform=axes.transData + dodge,
             zorder=4,
         )
-    for index, row in enumerate(later):
-        shade = LATER_COLORS[index]
-        losses = row.losses
-        assert losses is not None
-        mean = fmean(losses)
-        axes.errorbar(
-            [row.stored_weights / 1e6],
-            [mean],
-            yerr=[[mean - min(losses)], [max(losses) - mean]],
-            color=shade,
-            marker="*",
-            markersize=14,
-            markeredgecolor=SURFACE,
-            capsize=5,
-            linewidth=1.5,
-            linestyle="none",
-            label=plain_words(row.cell),
-            transform=axes.transData + ScaledTranslation(LATER_DODGE / 72, 0, axes.figure.dpi_scale_trans),
-            zorder=5,
-        )
+    for mark in later:
+        for index, row in enumerate(mark.rows):
+            losses = row.losses
+            assert losses is not None
+            mean = fmean(losses)
+            grouped = len(mark.rows) > 1
+            axes.errorbar(
+                [row.stored_weights / 1e6],
+                [mean],
+                yerr=[[mean - min(losses)], [max(losses) - mean]],
+                color=mark.color,
+                marker="*",
+                markersize=9 if grouped else 14,
+                markeredgecolor=SURFACE,
+                capsize=3 if grouped else 5,
+                linewidth=1 if grouped else 1.5,
+                linestyle="none",
+                label=mark.label if index == 0 else None,
+                transform=axes.transData
+                + ScaledTranslation((LATER_DODGE + grouped * DRAW_DODGE * (index + 1)) / 72, 0, axes.figure.dpi_scale_trans),
+                zorder=5,
+            )
     visible = [loss for summary in summaries.values() if low <= summary.stored / 1e6 <= high for loss in summary.losses]
-    visible += [loss for row in later if low <= row.stored_weights / 1e6 <= high for loss in row.losses or ()]
+    visible += [loss for mark in later for row in mark.rows if low <= row.stored_weights / 1e6 <= high for loss in row.losses or ()]
     margin = 0.08 * (max(visible) - min(visible))
     axes.set_xlim(low, high)
     axes.set_ylim(min(visible) - margin, max(visible) + margin)
@@ -793,9 +1030,7 @@ def panel(axes: Axes, budget: Budget, later: Sequence[Row], ledger: Ledger, low:
 
 
 def chart(budget: Budget, ledger: Ledger) -> None:
-    later = later_cells(ledger, budget.steps)
-    if len(later) > len(LATER_COLORS):
-        raise ValueError(f"{len(later)} later cells and {len(LATER_COLORS)} colours to tell them apart")
+    later = marks(ledger, later_cells(ledger, budget.steps))
     figure, (whole, detail) = plt.subplots(1, 2, figsize=(13, 6.4), dpi=160, facecolor=SURFACE, width_ratios=(1, 1.25))
     panel(whole, budget, later, ledger, 0.85, 7.4, annotate=True)
     panel(detail, budget, later, ledger, 3.0, 7.0, annotate=True)
@@ -812,7 +1047,7 @@ def chart(budget: Budget, ledger: Ledger) -> None:
     )
     handles, labels = whole.get_legend_handles_labels()
     architecture = ledger.axis(ARCHITECTURE)
-    figure.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.05), ncol=LEGEND_COLUMNS, frameon=False, labelcolor=INK, fontsize=10)
+    figure.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.05), ncol=LEGEND_COLUMNS, frameon=False, labelcolor=INK, fontsize=9)
     figure.text(
         0.5,
         0.008,
@@ -826,6 +1061,9 @@ def chart(budget: Budget, ledger: Ledger) -> None:
     )
     figure.tight_layout(rect=(0, 0.075 + 0.03 * math.ceil(len(handles) / LEGEND_COLUMNS), 1, 0.96))
     figure.savefig(CHART, facecolor=SURFACE)
+    plt.close(figure)
+    lead = lead_cells(ledger, budget.steps)
+    curves(ledger, budget.steps, [mark for mark in later if mark.rows[0] in lead])
 
 
 def main() -> None:
@@ -835,7 +1073,7 @@ def main() -> None:
     short = {name: complete(name, short_sweep(name)) for name in ARMS}
     long_sweeps = {name: complete(name, long_sweep(name)) for name in ARMS}
     rates = {name: lowest(sweep) for name, sweep in long_sweeps.items()}
-    long = read_budget(LONG_STEPS, {name: rates[RATE_FROM.get(name, name)] for name in ROUNDS_ONE_AND_TWO}, SEEDS)
+    long = read_budget(LONG_STEPS, {name: rates[rate_source(name)] for name in ROUNDS_ONE_AND_TWO}, SEEDS)
     chart(long, ledger)
     sections = {
         "axes": axes_table(ledger),
@@ -843,6 +1081,12 @@ def main() -> None:
         "rounds": rounds_text(ledger),
         "cells": cells_table(ledger),
         "beside-classic": beside_classic_table(ledger, LONG_STEPS),
+        "memory": memory_table(ledger, memory.read(), lead_cells(ledger, LONG_STEPS)),
+        "maps": maps_table(ledger, LONG_STEPS),
+        "map-spread": map_spread(ledger, LONG_STEPS),
+        "run-end": run_end_table(
+            ledger, [*(ledger.name(row.cell) for row in lead_cells(ledger, LONG_STEPS)), FULL, NO_ROUTER, BOTH_ROUTED], FIRST_STEPS, LONG_STEPS
+        ),
         "both-budgets": both_budgets_table(first, long),
         "rate-alone": rate_alone_table(
             first,

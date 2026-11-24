@@ -13,7 +13,77 @@ the first experiment's 4 and 8, and the plain models they are compared with.
 A gap is a configuration's mean validation loss minus the better of the two plain curves read
 at its stored weights; negative means the configuration beats a plain model of its size.
 
+## How a run ends
+
+A run ends after a fixed number of optimizer steps, 8,000 or 32,000, set before it starts.
+Nothing watches the validation loss: no run stops early for having learned enough, and none
+is trained until its loss stops falling. The one exception is a run whose training loss
+stops being a finite number, which is ended and recorded as lost. The learning rate climbs for 200 steps and then follows a cosine down to a tenth of
+its peak, which it reaches at the last step. The loss reported for a run is the validation
+loss of the weights as they stand after that last step, over the whole validation split; no
+earlier or best checkpoint is kept.
+
+No run here is converged. The table sets each cell stopped at 8,000 steps (seed 0, the best
+of the three rates tried) beside the same cell stopped at 32,000 (seed 0), and gives how far
+the logged loss moved over the last 2,000 and the last 500 steps of the long run, averaged
+over its three seeds. Four times the steps bought 0.064 to 0.089 at
+every cell. Over the last 2,000 steps of the long run, by which point the rate is within a
+tenth of its floor, the loss still falls by 0.002 to 0.004; over the last 500 it moves by
+less than 0.001 in either direction. The curve is flat at the last step because the
+schedule has brought the rate to its floor there, not because the model has stopped
+learning: a longer run would end lower. Every comparison in this report is therefore
+between runs of equal steps, and none is between converged models. Whether the order of
+the model that picks per token and the fixed map survives four times the steps again is an
+open hypothesis in the ledger (`picking-too-few-steps`).
+
+| cell | in plain words | seed 0, stopped at 8,000 steps, best of 3 rates | seed 0, stopped at 32,000 steps | what 4 times the steps bought | change over the last 2,000 of 32,000 steps, mean of seeds | change over the last 500 of 32,000 steps, mean of seeds |
+|---|---|---|---|---|---|---|
+| `both-modern` | attention and feed-forward shared, fixed map, 4 chunks, modern architecture | 1.0626 | 0.9989 | -0.0637 | -0.0032 | +0.0001 |
+| `modern` | nothing shared, modern architecture | 1.0575 | 0.9835 | -0.0740 | -0.0020 | +0.0001 |
+| `plain-l4-modern` | nothing shared, 4 modules, modern architecture | 1.1128 | 1.0414 | -0.0714 | -0.0019 | +0.0001 |
+| `plain-w184-modern` | nothing shared, width 184, modern architecture | 1.0820 | 1.0104 | -0.0716 | -0.0025 | -0.0003 |
+| `full` | nothing shared | 1.0538 | 0.9819 | -0.0719 | -0.0032 | -0.0003 |
+| `both` | attention and feed-forward shared, fixed map, 4 chunks | 1.0802 | 1.0122 | -0.0681 | -0.0040 | -0.0009 |
+| `both-routed` | attention and feed-forward shared, picked per token, 4 chunks | 1.1208 | 1.0316 | -0.0892 | -0.0036 | +0.0004 |
+
+![Validation loss along training](curves.png)
+
+The curves are the four modern cells the reading leads with, logged every 500 steps on the
+first 2,048 validation windows, which read about 0.02 above the loss over the whole split.
+The plain model at full width is the lowest from about step 2,000 on and the plain model of
+four modules the highest from step 1,000 on. The shared model starts below the plain model
+narrowed to width 184, runs 0.002 to 0.005 above it from about step 8,000 to step 18,500,
+crosses back between steps 19,000 and 20,000 and ends 0.012 below it. All four are flat
+over the last 500 steps.
+
 ## Reading
+
+The pair to judge sharing by holds compute equal. In the modern architecture, eight modules
+at width 256 that each own their weights store 6,444,192 weights and reach 0.9819 nats per
+byte at 32,000 steps. The same eight modules sharing four chunks through the fixed map store
+3,289,936, 51% as many, and reach 1.0012. The two multiply by the same number of weights
+per token, so the difference is what halving the stored weights costs at equal compute:
+0.019 on average, and 0.015, 0.022 and 0.021 at the three seeds, where each model's seeds
+have a standard deviation of 0.002 to 0.003. Sharing is not free. It is the cheapest of the
+three ways tried here of storing half the weights: against the same full model, dropping to
+four modules costs 0.058 and narrowing all eight to width 184 costs 0.031, and those two
+also do about half the arithmetic per token, which sharing does not save. On the GPU the
+shared model holds 13 MiB of weights against the full model's 25, and that is nearly all
+it saves: a batch of 256 windows peaks at 508 MiB for one and 507 for the other, and a
+training step at 1,879 and 1,916, where the 37 MiB between them are the gradient and
+optimizer copies of the weights the shared model does not have (the table under "GPU
+memory").
+
+The fixed map is not new: sending module i to chunk i mod N is the cycle strategy of Takase
+and Kiyono (2021, "Lessons on Parameter Sharing across Layers in Transformers",
+arXiv:2104.06022), which stacks M layers with independent parameters and repeats them in
+the same order, and which they present as relaxing the sharing of one layer's parameters
+with all layers, as in Universal Transformers (Dehghani et al., arXiv:1807.03819). A
+vendor's release page for a model of about 9 billion parameters, SenseNova Loop-9B,
+describes reuse across layers at that scale, in a layout with ends of its own: by the
+vendor's account it stores 32 decoder layers and computes 56, running the middle 24 twice
+with the same weights and the first four and last four once. No number of theirs is checked here. A map with ends of its own is
+in the ledger as an open hypothesis (`own-ends-beat-the-all-shared-map`).
 
 Three findings of the first experiment held in sign and shrank in size: attention routed
 stays above the plain curve (+0.026 at the first budget, +0.021 at the long one), both routed
@@ -30,8 +100,8 @@ choosing a chunk per token costs loss against a plain model and against fixed sh
 same weights, and fixed sharing is the only arrangement here that beats a plain model of
 equal storage.
 
-The loop described below has since run three rounds at the long budget; the cells they
-tried are the stars on the chart. A low-rank correction per module on one shared chunk does
+The loop described below has since run four rounds at the long budget; the cells they
+tried are the stars on the chart. The fourth is the equal-compute pair above. A low-rank correction per module on one shared chunk does
 not beat a second chunk at equal stored weights. Rounds 2 and 3 took the fixed map, eight
 modules reusing four chunks with no router, into a modern transformer (rotary positions,
 root-mean-square norms, a gated feed-forward) and set it against two plain models. The
@@ -60,10 +130,11 @@ full width or eight modules narrowed. Round 2's 0.039 was measured against the w
 two controls. The modern plain model of four modules reads 0.008 worse than the same cell in
 the classic architecture, while the modern shared model and the modern narrowed model read
 better than their classic counterparts, by 0.012 and 0.008 (the table under "The modern
-cells beside the classic architecture"). Of the two modern plain cells run, then, one reads
-worse than its classic counterpart and one reads better, the second against an interpolated
-classic curve and not a run of its own width, so the plain model reading worse is not
-general to modern plain models here. No run isolates why the cell of four modules reads
+cells beside the classic architecture"). Of the three modern plain cells run, then, one reads
+worse than its classic counterpart, one reads better, against an interpolated classic curve
+and not a run of its own width, and the full model reads level with it (0.001 lower, inside
+its seed spread), so the plain model reading worse is not general to modern plain models
+here. No run isolates why the cell of four modules reads
 worse, and no cause is claimed. Against the control that does not read worse the margin is
 0.012, under a third of 0.039.
 
@@ -73,9 +144,11 @@ modern plain control is one width and one depth: it is 2.1% larger than the shar
 instead of an interpolation between two widths, and no other mix of depth and width at that
 storage, such as six narrower modules, has been run in the modern architecture. Learning
 rates are chosen on seed 0, and the narrowed model's two best rates end 0.0003 apart in
-loss. Stored weights are held nearly equal and compute is not: the shared model runs eight modules
-at width 256, which multiply by about 1.9 times the weights per token of eight modules at
-width 184 and twice those of four modules at width 256. On this GPU a training step of the
+loss. Against these two controls stored weights are held nearly equal and compute is not: the
+shared model runs eight modules at width 256, which multiply by about 1.9 times the weights
+per token of eight modules at width 184 and twice those of four modules at width 256; the
+pair at the head of this reading is the one that holds compute equal and lets storage
+differ. On this GPU a training step of the
 shared model and of the narrowed one took the same time, about 110 ms. Whether a per-token
 pick fares differently in the modern architecture has not been run.
 
@@ -91,9 +164,11 @@ are drawn side by side so that none hides another, which the chart notes under i
 Points are means of three seeds. A star is a cell with three seeds at this budget beyond
 those of the first two experiments, tried by the loop described next; it is drawn just
 right of its stored weights so that it hides no point of equal size. The two lines and the
-other points are the classic architecture; the three stars of the modern architecture are
-read against one another, not against the lines: the shared model lowest, the plain model
-narrowed to width 184 above it, and the plain model of four modules highest. The legend label of every point and
+other points are the classic architecture; the four stars of the modern architecture are
+read against one another, not against the lines: at about 3.3 million stored weights the
+shared model lowest, the plain model narrowed to width 184 above it and the plain model of
+four modules highest, and at 6.4 million the plain model of eight modules at full width,
+below all three. The legend label of every point and
 star is spelled from the plain words the ledger gives each axis value: what the cell
 shares, the values it has off the default, and for a cell that shares weights also how a
 module gets its chunk and how many chunks a bank holds. A line's label opens with the same
@@ -116,10 +191,11 @@ three seeds at that rate.
 | axis | meaning | values (default in bold) | tags in a run's path |
 |---|---|---|---|
 | shared | which weights the modules draw from a bank instead of owning: none, feed-forward, attention or both | **none**, ff, attn, both | `ff`, `attn`, `both` |
-| pick | how a module gets its chunk: fixed is module i to chunk i mod N; routed is a per-token learned pick sampled with noise; argmax the same without noise; keys scores a learned key per chunk; frozen is routed until a quarter of training, then each module keeps its most common pick; stopped is routed with the router's weights held still after that quarter | **fixed**, routed, argmax, keys, frozen, stopped | `routed`, `routed-argmax`, `routed-keys`, `frozen-picks`, `stopped-router` |
+| pick | how a module gets its chunk: fixed is module i to chunk i mod N; ends gives the first module and the last a chunk of their own and cycles the modules between them through the rest; drawn is a map drawn at random before training and kept for the whole run (each module's chunk is drawn uniformly, and the modules are drawn again together until every chunk is used); routed is a per-token learned pick sampled with noise; argmax the same without noise; keys scores a learned key per chunk; frozen is routed until a quarter of training, then each module keeps its most common pick; stopped is routed with the router's weights held still after that quarter | **fixed**, ends, drawn, routed, argmax, keys, frozen, stopped | `ends`, `drawn`, `routed`, `routed-argmax`, `routed-keys`, `frozen-picks`, `stopped-router` |
+| draw | which map a drawn pick uses: the seed of the generator the map is drawn from, apart from the training seed, so one draw is one map at every training seed; 0 with any other pick | **0**, 1, 2, 3, 4 | `d1`, `d2`, `d3`, `d4` |
 | chunks | bank size: chunks stored per shared kind | 1, 2, **4**, 8 | `c1`, `c2`, `c8` |
 | rank | rank of a low-rank correction each module adds to the shared chunk it uses; 0 is none | **0**, 24 | `r24` |
-| modules | compute modules (layers) | 1, 2, 4, 6, **8** | `plain-l1`, `plain-l2`, `plain-l4`, `plain-l6` |
+| modules | compute modules (layers) | 1, 2, 4, 6, **8**, 16 | `plain-l1`, `plain-l2`, `plain-l4`, `plain-l6`, `l16` |
 | width | hidden width | 96, 128, 160, 184, 192, 224, **256** | `plain-w96`, `plain-w128`, `plain-w160`, `plain-w184`, `plain-w192`, `plain-w224` |
 | steps | training budget in optimizer steps; the tag is the directory under runs/ | **8000**, 32000, 128000 | `8000`, `32000`, `128000` |
 | architecture | the transformer around the banks: classic is learned positions, layer norms and a GELU feed-forward; modern is rotary positions, root-mean-square norms and a gated feed-forward | **classic**, modern | `modern` |
@@ -144,13 +220,18 @@ hand in the ledger; statuses are computed.
 | priority | hypothesis | statement | settling comparisons (lower minus higher, by seed) | status |
 |---|---|---|---|---|
 | 1 | low-rank-correction | A shared bank plus a low-rank correction per module beats plain sharing at equal stored weights: one chunk per bank with a rank-24 correction in each of the 8 modules reaches a lower loss than the fixed map with two chunks, which stores 2,304 more weights (0.1%). | `32000/both-c1-r24` below `32000/both-c2`: +0.0094, +0.0081, +0.0023 | **refuted** |
+| 1 | halving-stored-weights-costs-loss-at-equal-compute | At equal compute in the modern architecture, halving the stored weights costs loss: the plain model of eight modules at width 256, which owns all eight chunks of each kind, reaches a lower loss than eight modules sharing four chunks through the fixed map. The two multiply by the same number of weights per token; the shared model stores 3,289,936 weights, 51% of the plain model's 6,444,192. Supported means sharing has a price at equal compute, and the differences are its size; refuted would mean the shared model reaches the lower loss with half the weights; open, that three seeds do not separate the two. | `32000/modern` below `32000/both-modern`: -0.0154, -0.0217, -0.0209 | **supported** |
 | 2 | reuse-survives-the-modern-architecture | The gain from reuse survives the modern architecture: with rotary positions, root-mean-square norms and a gated feed-forward, eight modules reusing four chunks still beat the plain model of four modules. | `32000/both-modern` below `32000/plain-l4-modern`: -0.0425, -0.0422, -0.0326 | **supported** |
 | 2 | sharing-beats-a-narrowed-modern-model | In the modern architecture the shared model beats a plain model that keeps all eight modules and stores no fewer weights: eight modules reusing four chunks through the fixed map reach a lower loss than the plain model narrowed to width 184, the width nearest to the shared model's stored weights among multiples of 8, which stores 70,088 more weights (2.1%). | `32000/both-modern` below `32000/plain-w184-modern`: -0.0115, -0.0097, -0.0152 | **supported** |
+| 2 | the-mod-map-beats-a-map-drawn-at-random | Which module uses which chunk matters: in the modern architecture the mod map, where every chunk serves two modules four apart, reaches a lower loss than a fixed map drawn at random over the same four chunks. A drawn map uses every chunk, so it stores exactly the mod map's weights, and it trains at the mod map's learning rate. One comparison per drawn map: supported means every drawn map is worse, refuted that every one is better, and open that the maps do not all fall on one side by more than the spread of training seeds. | `32000/both-modern` below `32000/both-drawn-d1-modern`: not run<br>`32000/both-modern` below `32000/both-drawn-d2-modern`: not run<br>`32000/both-modern` below `32000/both-drawn-d3-modern`: not run<br>`32000/both-modern` below `32000/both-drawn-d4-modern`: not run | **open** |
 | 3 | picking-lock-in | A per-input pick loses to the fixed map because routers lock in early, near-random picks: with each module frozen to its router's most common pick after a quarter of training, the model still loses to the fixed map of module i to chunk i mod N. | `32000/both` below `32000/both-frozen-picks`: not run | **open** |
 | 3 | picking-chase | A per-input pick loses because chunks and router chase each other: holding the router's weights still after a quarter of training beats letting it learn throughout. | `32000/both-stopped-router` below `32000/both-routed`: not run | **open** |
 | 3 | picking-worse-function | A per-input pick loses because mixing chunks token by token is a worse function than one chunk per module, even under a router that no longer moves: frozen picks beat a stopped router. | `32000/both-frozen-picks` below `32000/both-stopped-router`: not run | **open** |
-| 4 | picking-too-few-steps | A per-input pick loses only because training is short: at 128,000 steps the routed model reaches a lower loss than the fixed map. | `128000/both-routed` below `128000/both`: not run | **open** |
-| 5 | compress-a-trained-model | A trained unshared model can be compressed into a shared bank and keep a lower loss than the same shared model trained from scratch. No cell expresses this yet: it needs an axis for how training starts. | no cell | **open** |
+| 4 | own-ends-beat-the-all-shared-map | At equal stored weights, giving the first and the last module chunks of their own and looping the modules between them beats sharing every chunk alike: with four chunks for eight modules in the modern architecture, the map 0 1 2 1 2 1 2 3 reaches a lower loss than the mod map 0 1 2 3 0 1 2 3, which stores the same weights. | `32000/both-ends-modern` below `32000/both-modern`: not run | **open** |
+| 4 | a-pick-freed-from-the-fixed-map-beats-a-pick-learned-from-the-start | A per-token pick that starts as the fixed map and is freed only once the chunks have specialised beats a pick learned from the first step: every module computes through the mod map for the first part of training, then a router initialised to reproduce that map takes over. A chunk has to be something stable before choosing among chunks can mean anything. No cell expresses this yet: it needs a pick value that hands over from the map to a router. Its cell would train at the routed model's pace, about 8 GPU-hours under the rate protocol. | no cell | **open** |
+| 5 | picking-too-few-steps | A per-input pick loses only because training is short: at 128,000 steps the routed model reaches a lower loss than the fixed map. | `128000/both-routed` below `128000/both`: not run | **open** |
+| 6 | compress-a-trained-model | A trained unshared model can be compressed into a shared bank and keep a lower loss than the same shared model trained from scratch. No cell expresses this yet: it needs an axis for how training starts. | no cell | **open** |
+| 7 | the-map-matters-more-with-more-modules | With sixteen modules over the same four chunks, where a drawn map can differ from the mod map in more places than with eight, the mod map reaches a lower loss than a map drawn at random. Both cells store the weights of the eight-module shared model plus eight modules' norms, and compute twice as much per token. The loop prices the pair at 7.5 GPU-hours from the pace of eight modules; sixteen modules take about twice the time per step, so about 15. | `32000/both-l16-modern` below `32000/both-drawn-d1-l16-modern`: not run | **open** |
 | 9 | reuse-beats-fewer-modules | Eight modules reusing N chunks beat the plain model of N modules, which stores the same chunks and applies each once. | `32000/both-c1` below `32000/plain-l1`: -0.2580, -0.2593, -0.2622<br>`32000/both-c2` below `32000/plain-l2`: -0.0634, -0.0611, -0.0555<br>`32000/both` below `32000/plain-l4`: -0.0195, -0.0198, -0.0164 | **supported** |
 | 9 | routing-beats-the-fixed-map | A per-input pick over the two banks beats the fixed map over the same banks. | `32000/both-routed` below `32000/both`: +0.0194, +0.0200, +0.0167<br>`32000/both-routed-argmax` below `32000/both`: +0.0361, +0.0310, +0.0304<br>`32000/both-routed-keys` below `32000/both`: +0.0224, +0.0168, +0.0167 | **refuted** |
 
@@ -217,6 +298,16 @@ sharing-beats-a-narrowed-modern-model (priority 2) is the highest-priority open 
 
 In plain words: in a transformer built the way current ones are, eight modules sharing four chunks by a fixed map beat the plain model that keeps all eight modules and is narrowed to about the same stored weights, by 0.0121 on average and at every seed. Width 184 is the nearest width (a width is a multiple of 8, so that each of four heads rotates its dimensions in pairs) and stores 70,088 more weights than the shared model (2.1%), so the plain side is the larger; width 176 would store 6.4% fewer. If a modern plain model gains from width as the classic ones do, the margin at exactly equal stored weights is a little larger, which no second modern width has been run to show. This is the stronger of the two plain controls: round 2's margin over the plain model of four modules was 0.0391, and the narrowed control is 0.0270 below that one, which leaves 0.0121. The plain model of four modules reads 0.0083 worse in the modern architecture than in the classic one (1.0403 against 1.0320), while the shared model reads 0.0122 better (1.0012 against 1.0134) and the narrowed model 0.0081 better than the classic narrower curve at its stored weights (1.0133 against 1.0214). So of the two modern plain cells run, one reads worse than its classic counterpart and one better; no run isolates why. In the classic architecture the shared model is 0.0080 below the narrower curve at equal stored weights. What the round does not show: a modern plain curve (the control is one width, 2.1% larger, not an interpolation); another mix of depth and width at that storage; another size, bank size, budget or dataset; a per-token pick in the modern architecture; and compute, which is not held equal: the shared model runs eight modules at width 256, which multiply by about 1.9 times the weights per token of the narrowed model, though a training step took the same time for both, about 110 ms. The long budget moved the narrowed model's best rate from 0.002 to 0.001, by 0.0003 in loss, so the rate sweep added a run at 0.0005; that run is 1.0 of the 1.1 GPU-hours over the estimate, and the rest is pace, 111 ms a step against the 108 of the tried cell the estimate priced it from.
 
+### Round 4: halving-stored-weights-costs-loss-at-equal-compute
+
+halving-stored-weights-costs-loss-at-equal-compute (priority 1) is the highest-priority open hypothesis with an unfinished comparison that fits 12 GPU-hours; the cheapest is 32000/modern against 32000/both-modern, estimated at 4.6 GPU-hours.
+
+32000/modern reached 0.9819 nats per byte with 6,444,192 stored weights at rate 0.001; 32000/both-modern reached 1.0012 with 3,289,936 at rate 0.002. Lower minus higher by seed: -0.0154, -0.0217, -0.0209. halving-stored-weights-costs-loss-at-equal-compute went from open to supported.
+
+7 runs, 4.3 GPU-hours of training against an estimate of 4.6; ledger rows written: `32000/modern`, `8000/modern`.
+
+In plain words: this is the pair to judge sharing by when compute is what is held equal. Both models run eight modules at width 256 and multiply by the same number of weights per token; the plain one owns all eight chunks of each kind and stores 6,444,192 weights, the shared one reuses four and stores 3,289,936, 51% as many. The plain model reaches 0.9819 and the shared one 1.0012, so halving the stored weights costs 0.0193 nats per byte on average, at every seed (0.0154, 0.0217, 0.0209), where each model's seeds have a standard deviation of 0.002 to 0.003. The price is small beside what the same halving costs a plain model that gives up modules or width: four modules at width 256 reach 1.0403, 0.0584 above the full plain model, and eight modules at width 184 reach 1.0133, 0.0314 above it. What the round does not show: the same pair at another size, bank size, budget or dataset, or the classic pair under one protocol (there the full model reads 0.9833 and the shared one 1.0134, 0.0301 apart). The plain model's best rate is 0.001 and the shared model's 0.002, each chosen on seed 0; the plain model at 0.002 reads 0.9852 at seed 0, 0.0017 above its run at 0.001.
+
 ### The modern cells beside the classic architecture
 
 Each cell of the modern architecture that has three seeds at the long budget, beside the
@@ -230,72 +321,132 @@ learning rate.
 | cell | stored weights | mean loss | classic counterpart | its stored weights | its mean loss | cell minus classic, by seed | mean |
 |---|---|---|---|---|---|---|---|
 | `32000/both-modern` | 3,289,936 | 1.0012 | `32000/both` | 3,360,512 | 1.0134 | -0.0133, -0.0092, -0.0142 | -0.0122 |
+| `32000/modern` | 6,444,192 | 0.9819 | `32000/full` | 6,515,456 | 0.9833 | +0.0016, -0.0016, -0.0043 | -0.0014 |
 | `32000/plain-l4-modern` | 3,287,888 | 1.0403 | `32000/plain-l4` | 3,356,416 | 1.0320 | +0.0097, +0.0132, +0.0020 | +0.0083 |
 | `32000/plain-w184-modern` | 3,360,024 | 1.0133 | the narrower plain curve, read at the same stored weights | 3,360,024 | 1.0214 | -0.0097, -0.0088, -0.0058 | -0.0081 |
 
 In the modern architecture the shared model reads 0.012 lower than its classic counterpart
-and the narrowed plain model 0.008 lower, while the plain model of four modules reads 0.008
+and the narrowed plain model 0.008 lower, the full plain model reads level with its own
+(0.001 lower, with seeds on both sides), and the plain model of four modules reads 0.008
 higher. That cell is above its classic twin at every seed, by 0.002 to 0.013, and its seeds
-have a standard deviation of 0.007, the widest of the three modern cells. The two plain
-cells differ in depth and width at once (four modules at width 256, eight at width 184), and
+have a standard deviation of 0.007, the widest of the four modern cells. The two plain
+cells that move differ in depth and width at once (four modules at width 256, eight at width 184), and
 no run varies one without the other or changes one part of the modern design at a time, so
 the table shows where the modern plain model reads worse and not why. What it changes is the
 size of the gain from sharing: the shared model's margin over the plain model of four
 modules, 0.039, is about three times its margin over the narrowed one, 0.012.
+
+### GPU memory
+
+Peak memory held by PyTorch's allocator on the GPU while a cell runs, measured by
+`python -m weightbank.memory` on freshly initialised weights and random bytes: the weights
+alone as 32-bit floats; one forward pass at inference over 1 window of 256 bytes and over
+the 256 windows of a validation batch, with nothing kept for gradients; and three training
+steps of 64 windows, with the gradients and the optimizer's two moments per weight. Every
+peak includes the weights. It is the allocator's peak and not the process total, which adds
+the CUDA context, the same for every cell, and it leaves out the 95 MiB
+of text a training run also keeps on the GPU.
+
+| cell | in plain words | stored weights | weights alone, MiB | inference, 1 window, MiB | inference, 256 windows, MiB | training, 64 windows, MiB |
+|---|---|---|---|---|---|---|
+| `both-modern` | attention and feed-forward shared, fixed map, 4 chunks, modern architecture | 3,289,936 | 13 | 20 | 508 | 1,879 |
+| `modern` | nothing shared, modern architecture | 6,444,192 | 25 | 38 | 507 | 1,916 |
+| `plain-l4-modern` | nothing shared, 4 modules, modern architecture | 3,287,888 | 13 | 20 | 488 | 1,013 |
+| `plain-w184-modern` | nothing shared, width 184, modern architecture | 3,360,024 | 13 | 23 | 989 | 1,966 |
+
+At inference the shared model saves the weights it does not store and nothing else. Its weights take 13
+MiB against the full plain model's 25. A pass over one window peaks 8 MiB above the weights
+for the shared model and 14 MiB above them for the plain one; a 16-bit copy of the weights
+would take 6 and 12 of those, and the pass runs as validation does, under 16-bit autocast
+over 32-bit weights. Over 256 windows the activations are
+nearly all of the peak and the two models are level, at 508 and 507 MiB. In training the
+plain model's 37 MiB more is three further copies of its 12 MiB of extra weights, a
+gradient and two optimizer moments. The plain model of four modules computes half as much
+and trains in about half the memory. The model narrowed to width 184 peaks at 989 MiB over
+256 windows, more than the full-width model. A one-off probe of plain modern models of
+eight modules at seven widths, measured the same way and not kept in `runs/memory.json`,
+peaks at 309, 373, 440 and 507 MiB at widths 160, 192, 224 and 256, whose four heads each
+have a multiple of 8 dimensions, and at 968, 989 and 1,027 MiB at widths 176, 184 and 200,
+whose heads do not. The probe shows where the larger peak falls and not what causes it.
+
+### Fixed maps: the mod map, maps drawn at random, and own ends
+
+A fixed map says which chunk each module computes with, for the whole run and for every
+token. The mod map sends module i to chunk i mod N. The map with own ends gives the first
+module and the last a chunk each that no other module uses and cycles the modules between
+them through the remaining chunks: 0 1 2 1 2 1 2 3 for eight modules over four chunks. A drawn map is drawn before training
+from a random generator seeded with the draw's number alone, so one draw is one map at
+every training seed, and the training seed still sets the initial weights and the batches.
+Each module's chunk is drawn uniformly and independently; a draw that leaves a chunk unused
+is thrown away whole and drawn again, so a drawn map always uses the whole bank and stores
+exactly the weights of the mod map. An unused chunk therefore never arises and never has to
+be counted: a map that left one out would be a smaller bank, which the `chunks` axis
+already covers. A drawn map may put neighbouring modules on one chunk and may load the
+chunks unevenly. Which chunk is called 0 means nothing, so the table numbers each map's
+chunks in order of first use; two draws that give the same row are the same map. A map
+other than the mod map trains at the mod map's learning rate, so that the map is the only
+thing that differs.
+
+| cell | chunk of each module, first to last | modules on each chunk | neighbouring modules on one chunk | seed 0 | seed 1 | seed 2 | mean | seed sd | minus the mod map, by seed | mean difference |
+|---|---|---|---|---|---|---|---|---|---|---|
+
+No map but the mod map has runs.
 
 ### Every cell
 
 One row per cell and budget, from the run files; the rate, mean and seed spread are filled
 where three seeds share a rate.
 
-| cell | shared | pick | chunks | rank | modules | width | steps | architecture | stored weights | learning rate | mean loss | seed sd | runs |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `32000/attn-routed` | attn | routed | 4 | 0 | 8 | 256 | 32000 | classic | 5,480,004 | 0.002 | 1.0137 | 0.0032 | 4 |
-| `32000/both-c1` | both | fixed | 1 | 0 | 8 | 256 | 32000 | classic | 994,304 | 0.002 | 1.1177 | 0.0008 | 5 |
-| `32000/both-c1-r24` | both | fixed | 1 | 24 | 8 | 256 | 32000 | classic | 1,780,736 | 0.002 | 1.0649 | 0.0008 | 5 |
-| `32000/both-c2` | both | fixed | 2 | 0 | 8 | 256 | 32000 | classic | 1,783,040 | 0.001 | 1.0583 | 0.0039 | 5 |
-| `32000/both-c8` | both | fixed | 8 | 0 | 8 | 256 | 32000 | classic | 6,515,456 | 0.002 | 0.9841 | 0.0008 | 3 |
-| `32000/both` | both | fixed | 4 | 0 | 8 | 256 | 32000 | classic | 3,360,512 | 0.002 | 1.0134 | 0.0012 | 4 |
-| `32000/both-modern` | both | fixed | 4 | 0 | 8 | 256 | 32000 | modern | 3,289,936 | 0.002 | 1.0012 | 0.0029 | 4 |
-| `32000/both-routed-argmax` | both | argmax | 4 | 0 | 8 | 256 | 32000 | classic | 3,394,952 | 0.002 | 1.0459 | 0.0021 | 5 |
-| `32000/both-routed-keys` | both | keys | 4 | 0 | 8 | 256 | 32000 | classic | 3,398,016 | 0.002 | 1.0321 | 0.0022 | 5 |
-| `32000/both-routed` | both | routed | 4 | 0 | 8 | 256 | 32000 | classic | 3,394,952 | 0.002 | 1.0321 | 0.0013 | 5 |
-| `32000/ff-routed` | ff | routed | 4 | 0 | 8 | 256 | 32000 | classic | 4,430,404 | 0.002 | 1.0090 | 0.0014 | 4 |
-| `32000/full` | none | fixed | 4 | 0 | 8 | 256 | 32000 | classic | 6,515,456 | 0.002 | 0.9833 | 0.0012 | 5 |
-| `32000/plain-l1` | none | fixed | 4 | 0 | 1 | 256 | 32000 | classic | 987,136 | 0.002 | 1.3775 | 0.0013 | 4 |
-| `32000/plain-l2` | none | fixed | 4 | 0 | 2 | 256 | 32000 | classic | 1,776,896 | 0.002 | 1.1183 | 0.0004 | 4 |
-| `32000/plain-l4` | none | fixed | 4 | 0 | 4 | 256 | 32000 | classic | 3,356,416 | 0.002 | 1.0320 | 0.0013 | 5 |
-| `32000/plain-l4-modern` | none | fixed | 4 | 0 | 4 | 256 | 32000 | modern | 3,287,888 | 0.001 | 1.0403 | 0.0069 | 5 |
-| `32000/plain-l6` | none | fixed | 4 | 0 | 6 | 256 | 32000 | classic | 4,935,936 | 0.002 | 1.0019 | 0.0022 | 5 |
-| `32000/plain-w128` | none | fixed | 4 | 0 | 8 | 128 | 32000 | classic | 1,684,992 | 0.004 | 1.0779 | 0.0060 | 6 |
-| `32000/plain-w160` | none | fixed | 4 | 0 | 8 | 160 | 32000 | classic | 2,597,696 | 0.004 | 1.0413 | 0.0017 | 6 |
-| `32000/plain-w184-modern` | none | fixed | 4 | 0 | 8 | 184 | 32000 | modern | 3,360,024 | 0.001 | 1.0133 | 0.0026 | 5 |
-| `32000/plain-w192` | none | fixed | 4 | 0 | 8 | 192 | 32000 | classic | 3,707,008 | 0.002 | 1.0138 | 0.0014 | 5 |
-| `32000/plain-w224` | none | fixed | 4 | 0 | 8 | 224 | 32000 | classic | 5,012,928 | 0.002 | 0.9980 | 0.0038 | 5 |
-| `32000/plain-w96` | none | fixed | 4 | 0 | 8 | 96 | 32000 | classic | 968,896 | 0.002 | 1.1598 | 0.0010 | 4 |
-| `8000/attn-routed` | attn | routed | 4 | 0 | 8 | 256 | 8000 | classic | 5,480,004 | 0.001 | 1.1146 | 0.0024 | 5 |
-| `8000/both-c1` | both | fixed | 1 | 0 | 8 | 256 | 8000 | classic | 994,304 | 0.001 | 1.2054 | 0.0056 | 5 |
-| `8000/both-c1-r24` | both | fixed | 1 | 24 | 8 | 256 | 8000 | classic | 1,780,736 |  |  |  | 3 |
-| `8000/both-c2` | both | fixed | 2 | 0 | 8 | 256 | 8000 | classic | 1,783,040 | 0.001 | 1.1384 | 0.0073 | 5 |
-| `8000/both-c8` | both | fixed | 8 | 0 | 8 | 256 | 8000 | classic | 6,515,456 | 0.001 | 1.0768 | 0.0023 | 3 |
-| `8000/both` | both | fixed | 4 | 0 | 8 | 256 | 8000 | classic | 3,360,512 | 0.001 | 1.1004 | 0.0049 | 5 |
-| `8000/both-modern` | both | fixed | 4 | 0 | 8 | 256 | 8000 | modern | 3,289,936 |  |  |  | 3 |
-| `8000/both-routed-argmax` | both | argmax | 4 | 0 | 8 | 256 | 8000 | classic | 3,394,952 | 0.001 | 1.1581 | 0.0024 | 5 |
-| `8000/both-routed-keys` | both | keys | 4 | 0 | 8 | 256 | 8000 | classic | 3,398,016 | 0.001 | 1.1506 | 0.0088 | 5 |
-| `8000/both-routed` | both | routed | 4 | 0 | 8 | 256 | 8000 | classic | 3,394,952 | 0.001 | 1.1452 | 0.0042 | 5 |
-| `8000/ff-routed` | ff | routed | 4 | 0 | 8 | 256 | 8000 | classic | 4,430,404 | 0.001 | 1.0977 | 0.0048 | 5 |
-| `8000/full` | none | fixed | 4 | 0 | 8 | 256 | 8000 | classic | 6,515,456 | 0.001 | 1.0767 | 0.0021 | 5 |
-| `8000/plain-l1` | none | fixed | 4 | 0 | 1 | 256 | 8000 | classic | 987,136 | 0.001 | 1.4265 | 0.0017 | 5 |
-| `8000/plain-l2` | none | fixed | 4 | 0 | 2 | 256 | 8000 | classic | 1,776,896 | 0.001 | 1.1775 | 0.0025 | 5 |
-| `8000/plain-l4` | none | fixed | 4 | 0 | 4 | 256 | 8000 | classic | 3,356,416 | 0.001 | 1.1158 | 0.0052 | 5 |
-| `8000/plain-l4-modern` | none | fixed | 4 | 0 | 4 | 256 | 8000 | modern | 3,287,888 |  |  |  | 3 |
-| `8000/plain-l6` | none | fixed | 4 | 0 | 6 | 256 | 8000 | classic | 4,935,936 | 0.001 | 1.0952 | 0.0080 | 5 |
-| `8000/plain-w128` | none | fixed | 4 | 0 | 8 | 128 | 8000 | classic | 1,684,992 | 0.001 | 1.1939 | 0.0067 | 5 |
-| `8000/plain-w160` | none | fixed | 4 | 0 | 8 | 160 | 8000 | classic | 2,597,696 | 0.001 | 1.1544 | 0.0043 | 5 |
-| `8000/plain-w184-modern` | none | fixed | 4 | 0 | 8 | 184 | 8000 | modern | 3,360,024 |  |  |  | 3 |
-| `8000/plain-w192` | none | fixed | 4 | 0 | 8 | 192 | 8000 | classic | 3,707,008 | 0.001 | 1.1177 | 0.0027 | 5 |
-| `8000/plain-w224` | none | fixed | 4 | 0 | 8 | 224 | 8000 | classic | 5,012,928 | 0.001 | 1.0974 | 0.0056 | 5 |
-| `8000/plain-w96` | none | fixed | 4 | 0 | 8 | 96 | 8000 | classic | 968,896 | 0.001 | 1.2616 | 0.0040 | 5 |
+| cell | shared | pick | draw | chunks | rank | modules | width | steps | architecture | stored weights | learning rate | mean loss | seed sd | runs |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `32000/attn-routed` | attn | routed | 0 | 4 | 0 | 8 | 256 | 32000 | classic | 5,480,004 | 0.002 | 1.0137 | 0.0032 | 4 |
+| `32000/both-c1` | both | fixed | 0 | 1 | 0 | 8 | 256 | 32000 | classic | 994,304 | 0.002 | 1.1177 | 0.0008 | 5 |
+| `32000/both-c1-r24` | both | fixed | 0 | 1 | 24 | 8 | 256 | 32000 | classic | 1,780,736 | 0.002 | 1.0649 | 0.0008 | 5 |
+| `32000/both-c2` | both | fixed | 0 | 2 | 0 | 8 | 256 | 32000 | classic | 1,783,040 | 0.001 | 1.0583 | 0.0039 | 5 |
+| `32000/both-c8` | both | fixed | 0 | 8 | 0 | 8 | 256 | 32000 | classic | 6,515,456 | 0.002 | 0.9841 | 0.0008 | 3 |
+| `32000/both` | both | fixed | 0 | 4 | 0 | 8 | 256 | 32000 | classic | 3,360,512 | 0.002 | 1.0134 | 0.0012 | 4 |
+| `32000/both-modern` | both | fixed | 0 | 4 | 0 | 8 | 256 | 32000 | modern | 3,289,936 | 0.002 | 1.0012 | 0.0029 | 4 |
+| `32000/both-routed-argmax` | both | argmax | 0 | 4 | 0 | 8 | 256 | 32000 | classic | 3,394,952 | 0.002 | 1.0459 | 0.0021 | 5 |
+| `32000/both-routed-keys` | both | keys | 0 | 4 | 0 | 8 | 256 | 32000 | classic | 3,398,016 | 0.002 | 1.0321 | 0.0022 | 5 |
+| `32000/both-routed` | both | routed | 0 | 4 | 0 | 8 | 256 | 32000 | classic | 3,394,952 | 0.002 | 1.0321 | 0.0013 | 5 |
+| `32000/ff-routed` | ff | routed | 0 | 4 | 0 | 8 | 256 | 32000 | classic | 4,430,404 | 0.002 | 1.0090 | 0.0014 | 4 |
+| `32000/full` | none | fixed | 0 | 4 | 0 | 8 | 256 | 32000 | classic | 6,515,456 | 0.002 | 0.9833 | 0.0012 | 5 |
+| `32000/modern` | none | fixed | 0 | 4 | 0 | 8 | 256 | 32000 | modern | 6,444,192 | 0.001 | 0.9819 | 0.0022 | 4 |
+| `32000/plain-l1` | none | fixed | 0 | 4 | 0 | 1 | 256 | 32000 | classic | 987,136 | 0.002 | 1.3775 | 0.0013 | 4 |
+| `32000/plain-l2` | none | fixed | 0 | 4 | 0 | 2 | 256 | 32000 | classic | 1,776,896 | 0.002 | 1.1183 | 0.0004 | 4 |
+| `32000/plain-l4` | none | fixed | 0 | 4 | 0 | 4 | 256 | 32000 | classic | 3,356,416 | 0.002 | 1.0320 | 0.0013 | 5 |
+| `32000/plain-l4-modern` | none | fixed | 0 | 4 | 0 | 4 | 256 | 32000 | modern | 3,287,888 | 0.001 | 1.0403 | 0.0069 | 5 |
+| `32000/plain-l6` | none | fixed | 0 | 4 | 0 | 6 | 256 | 32000 | classic | 4,935,936 | 0.002 | 1.0019 | 0.0022 | 5 |
+| `32000/plain-w128` | none | fixed | 0 | 4 | 0 | 8 | 128 | 32000 | classic | 1,684,992 | 0.004 | 1.0779 | 0.0060 | 6 |
+| `32000/plain-w160` | none | fixed | 0 | 4 | 0 | 8 | 160 | 32000 | classic | 2,597,696 | 0.004 | 1.0413 | 0.0017 | 6 |
+| `32000/plain-w184-modern` | none | fixed | 0 | 4 | 0 | 8 | 184 | 32000 | modern | 3,360,024 | 0.001 | 1.0133 | 0.0026 | 5 |
+| `32000/plain-w192` | none | fixed | 0 | 4 | 0 | 8 | 192 | 32000 | classic | 3,707,008 | 0.002 | 1.0138 | 0.0014 | 5 |
+| `32000/plain-w224` | none | fixed | 0 | 4 | 0 | 8 | 224 | 32000 | classic | 5,012,928 | 0.002 | 0.9980 | 0.0038 | 5 |
+| `32000/plain-w96` | none | fixed | 0 | 4 | 0 | 8 | 96 | 32000 | classic | 968,896 | 0.002 | 1.1598 | 0.0010 | 4 |
+| `8000/attn-routed` | attn | routed | 0 | 4 | 0 | 8 | 256 | 8000 | classic | 5,480,004 | 0.001 | 1.1146 | 0.0024 | 5 |
+| `8000/both-c1` | both | fixed | 0 | 1 | 0 | 8 | 256 | 8000 | classic | 994,304 | 0.001 | 1.2054 | 0.0056 | 5 |
+| `8000/both-c1-r24` | both | fixed | 0 | 1 | 24 | 8 | 256 | 8000 | classic | 1,780,736 |  |  |  | 3 |
+| `8000/both-c2` | both | fixed | 0 | 2 | 0 | 8 | 256 | 8000 | classic | 1,783,040 | 0.001 | 1.1384 | 0.0073 | 5 |
+| `8000/both-c8` | both | fixed | 0 | 8 | 0 | 8 | 256 | 8000 | classic | 6,515,456 | 0.001 | 1.0768 | 0.0023 | 3 |
+| `8000/both` | both | fixed | 0 | 4 | 0 | 8 | 256 | 8000 | classic | 3,360,512 | 0.001 | 1.1004 | 0.0049 | 5 |
+| `8000/both-modern` | both | fixed | 0 | 4 | 0 | 8 | 256 | 8000 | modern | 3,289,936 |  |  |  | 3 |
+| `8000/both-routed-argmax` | both | argmax | 0 | 4 | 0 | 8 | 256 | 8000 | classic | 3,394,952 | 0.001 | 1.1581 | 0.0024 | 5 |
+| `8000/both-routed-keys` | both | keys | 0 | 4 | 0 | 8 | 256 | 8000 | classic | 3,398,016 | 0.001 | 1.1506 | 0.0088 | 5 |
+| `8000/both-routed` | both | routed | 0 | 4 | 0 | 8 | 256 | 8000 | classic | 3,394,952 | 0.001 | 1.1452 | 0.0042 | 5 |
+| `8000/ff-routed` | ff | routed | 0 | 4 | 0 | 8 | 256 | 8000 | classic | 4,430,404 | 0.001 | 1.0977 | 0.0048 | 5 |
+| `8000/full` | none | fixed | 0 | 4 | 0 | 8 | 256 | 8000 | classic | 6,515,456 | 0.001 | 1.0767 | 0.0021 | 5 |
+| `8000/modern` | none | fixed | 0 | 4 | 0 | 8 | 256 | 8000 | modern | 6,444,192 |  |  |  | 3 |
+| `8000/plain-l1` | none | fixed | 0 | 4 | 0 | 1 | 256 | 8000 | classic | 987,136 | 0.001 | 1.4265 | 0.0017 | 5 |
+| `8000/plain-l2` | none | fixed | 0 | 4 | 0 | 2 | 256 | 8000 | classic | 1,776,896 | 0.001 | 1.1775 | 0.0025 | 5 |
+| `8000/plain-l4` | none | fixed | 0 | 4 | 0 | 4 | 256 | 8000 | classic | 3,356,416 | 0.001 | 1.1158 | 0.0052 | 5 |
+| `8000/plain-l4-modern` | none | fixed | 0 | 4 | 0 | 4 | 256 | 8000 | modern | 3,287,888 |  |  |  | 3 |
+| `8000/plain-l6` | none | fixed | 0 | 4 | 0 | 6 | 256 | 8000 | classic | 4,935,936 | 0.001 | 1.0952 | 0.0080 | 5 |
+| `8000/plain-w128` | none | fixed | 0 | 4 | 0 | 8 | 128 | 8000 | classic | 1,684,992 | 0.001 | 1.1939 | 0.0067 | 5 |
+| `8000/plain-w160` | none | fixed | 0 | 4 | 0 | 8 | 160 | 8000 | classic | 2,597,696 | 0.001 | 1.1544 | 0.0043 | 5 |
+| `8000/plain-w184-modern` | none | fixed | 0 | 4 | 0 | 8 | 184 | 8000 | modern | 3,360,024 |  |  |  | 3 |
+| `8000/plain-w192` | none | fixed | 0 | 4 | 0 | 8 | 192 | 8000 | classic | 3,707,008 | 0.001 | 1.1177 | 0.0027 | 5 |
+| `8000/plain-w224` | none | fixed | 0 | 4 | 0 | 8 | 224 | 8000 | classic | 5,012,928 | 0.001 | 1.0974 | 0.0056 | 5 |
+| `8000/plain-w96` | none | fixed | 0 | 4 | 0 | 8 | 96 | 8000 | classic | 968,896 | 0.001 | 1.2616 | 0.0040 | 5 |
 
 ## The gaps at both budgets
 
@@ -453,6 +604,11 @@ finite is recorded with an infinite loss and loses.
 | both-c2 | 1.0752 | **1.0548** | 1.0553 |  |  | 0.001 | 0.0004 |
 | both |  | 1.0167 | **1.0122** |  |  | 0.002 | 0.0045 |
 
+Two kinds of cell have no sweep of their own and train at another cell's rate, so that
+the pair differs in one thing: `both-c8`, the full control computed through the bank code,
+at the full control's rate; and a fixed map other than the mod map at the mod map's rate.
+At the first budget such a cell runs its three seeds at 1e-3 like any other.
+
 Limits of this choice: it is made on one seed, so where two rates differ by less than the
 seed spread the pick between them is arbitrary; and a winner that is the best short rate
 and leads by 0.005 or less has no rate tried beyond it, so a rate beyond it could be better
@@ -463,8 +619,6 @@ by a similar amount. The feed-forward routed gap is of that size at both budgets
 - The long sweep starts from two rates per configuration and adds more only under the rule
   above. Six configurations ended with two long rates; a third for each would have added
   about three hours of the GPU.
-- `both-c8` has no sweep of its own: it is the full control computed through the bank code,
-  so it trains at the full control's rate, which keeps the two paired.
 - The two other routers were run for the model with both banks routed only. Feed-forward-only
   and attention-only versions of them would be four more configurations, about 21 hours of
   the GPU, and the both-routed pair already answers what they were added to ask.
@@ -848,6 +1002,10 @@ Both experiments and the learning-rate sweep, from the run files.
 | full | 1 | 32,000 | 0.002 | 6,515,456 | 0.9843 | 1569 |
 | full | 2 | 32,000 | 0.002 | 6,515,456 | 0.9837 | 1509 |
 | full | 0 | 32,000 | 0.004 | 6,515,456 | 0.9840 | 1865 |
+| modern | 0 | 32,000 | 0.001 | 6,444,192 | 0.9835 | 3134 |
+| modern | 1 | 32,000 | 0.001 | 6,444,192 | 0.9827 | 3109 |
+| modern | 2 | 32,000 | 0.001 | 6,444,192 | 0.9794 | 3115 |
+| modern | 0 | 32,000 | 0.002 | 6,444,192 | 0.9852 | 3533 |
 | plain-l1 | 0 | 32,000 | 0.001 | 987,136 | 1.3788 | 254 |
 | plain-l1 | 0 | 32,000 | 0.002 | 987,136 | 1.3764 | 252 |
 | plain-l1 | 1 | 32,000 | 0.002 | 987,136 | 1.3771 | 302 |
@@ -956,6 +1114,9 @@ Both experiments and the learning-rate sweep, from the run files.
 | full | 1 | 8,000 | 0.001 | 6,515,456 | 1.0744 | 409 |
 | full | 2 | 8,000 | 0.001 | 6,515,456 | 1.0772 | 426 |
 | full | 0 | 8,000 | 0.002 | 6,515,456 | 1.0538 | 397 |
+| modern | 0 | 8,000 | 0.0005 | 6,444,192 | 1.0610 | 845 |
+| modern | 0 | 8,000 | 0.001 | 6,444,192 | 1.0575 | 801 |
+| modern | 0 | 8,000 | 0.002 | 6,444,192 | 1.0591 | 785 |
 | plain-l1 | 0 | 8,000 | 0.0005 | 987,136 | 1.4541 | 63 |
 | plain-l1 | 0 | 8,000 | 0.001 | 987,136 | 1.4254 | 78 |
 | plain-l1 | 1 | 8,000 | 0.001 | 987,136 | 1.4285 | 72 |

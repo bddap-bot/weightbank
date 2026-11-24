@@ -1,0 +1,26 @@
+{
+ "both-modern": {
+  "weights_bytes": 13160448,
+  "inference_window_bytes": 21477376,
+  "inference_batch_bytes": 532750336,
+  "training_bytes": 1969779712
+ },
+ "modern": {
+  "weights_bytes": 25778176,
+  "inference_window_bytes": 40104960,
+  "inference_batch_bytes": 531143168,
+  "training_bytes": 2009082880
+ },
+ "plain-w184-modern": {
+  "weights_bytes": 13461504,
+  "inference_window_bytes": 23618560,
+  "inference_batch_bytes": 1037559808,
+  "training_bytes": 2061209088
+ },
+ "plain-l4-modern": {
+  "weights_bytes": 13152256,
+  "inference_window_bytes": 21169152,
+  "inference_batch_bytes": 512207360,
+  "training_bytes": 1062081536
+ }
+}

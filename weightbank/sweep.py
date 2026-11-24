@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 
-from weightbank.configs import default
+from weightbank.configs import default, rate_source
 from weightbank.ledger import SEEDS, STEPS
 from weightbank.train import Plan
 
@@ -82,6 +82,10 @@ def chosen(config: str, steps: int = LONG_STEPS) -> float | None:
 
 
 def protocol(config: str, steps: int) -> list[Plan]:
+    source = rate_source(config)
+    if source != config:
+        rate = FIRST_RATE if steps == FIRST_STEPS else chosen(source, steps)
+        return protocol(source, steps) if rate is None else [Plan(config, seed, steps, rate) for seed in SEEDS]
     plans = [short_plan(config, rate) for rate in SHORT_RATES]
     if steps == FIRST_STEPS:
         plans += [Plan(config, seed, FIRST_STEPS, FIRST_RATE) for seed in SEEDS]
@@ -92,7 +96,9 @@ def protocol(config: str, steps: int) -> list[Plan]:
     return list(dict.fromkeys(plans))
 
 
-def least_steps(steps: int) -> int:
+def least_steps(config: str, steps: int) -> int:
+    if rate_source(config) != config:
+        return len(SEEDS) * steps
     short = len(SHORT_RATES) * FIRST_STEPS
     if steps == FIRST_STEPS:
         return short + (len(SEEDS) - 1) * FIRST_STEPS

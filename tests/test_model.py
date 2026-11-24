@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import math
 
+import pytest
 import torch
 from torch import Tensor, nn
+from torch.amp.grad_scaler import GradScaler
 
 from weightbank import train
 from weightbank.configs import BANK, FIXED_MAP, FULL, KEYS, MODULES, NO_ROUTER, NOISE_FREE, OWN_CHUNK, config, named
@@ -12,8 +14,10 @@ from weightbank.model import (
     MODERN,
     VOCAB,
     Bank,
+    Drawn,
     FeedForward,
     Fixed,
+    Layout,
     KeyRouter,
     ModelConfig,
     Own,
@@ -72,6 +76,44 @@ def test_fixed_sharing_cycles_through_the_bank() -> None:
     _, trace = small(Fixed(2), Fixed(2))(tokens())
     for kind in (trace.feed_forward, trace.attention):
         assert [picks.chunk.unique().tolist() for picks in kind] == [[0], [1], [0], [1]]
+
+
+def test_a_drawn_map_is_the_same_whenever_it_is_drawn_and_uses_every_chunk() -> None:
+    assert [Fixed(4, Drawn(draw)).map(8) for draw in (1, 2, 3, 4)] == [
+        (0, 3, 3, 1, 1, 1, 2, 3),
+        (3, 3, 0, 0, 3, 2, 2, 1),
+        (0, 2, 1, 2, 2, 0, 0, 3),
+        (3, 0, 2, 1, 0, 0, 0, 3),
+    ]
+    for draw in range(1, 200):
+        for modules, chunks in ((8, 4), (16, 4), (4, 4), (5, 1)):
+            assert set(Fixed(chunks, Drawn(draw)).map(modules)) == set(range(chunks))
+    assert len({Fixed(4, Drawn(draw)).map(8) for draw in range(1, 200)}) > 150
+    with pytest.raises(ValueError, match="cannot use all"):
+        Fixed(8, Drawn(1)).map(4)
+    with pytest.raises(ValueError, match="numbered from 1"):
+        Drawn(0)
+
+
+def test_own_ends_give_the_first_and_last_module_a_chunk_no_other_uses() -> None:
+    assert Fixed(4, Layout.ENDS).map(8) == (0, 1, 2, 1, 2, 1, 2, 3)
+    assert Fixed(3, Layout.ENDS).map(5) == (0, 1, 1, 1, 2)
+    assert Fixed(4).map(8) == (0, 1, 2, 3, 0, 1, 2, 3)
+    with pytest.raises(ValueError, match="at least 3"):
+        Fixed(2, Layout.ENDS).map(8)
+
+
+def test_a_model_computes_with_the_chunk_its_map_names_and_stores_what_the_mod_map_stores() -> None:
+    torch.manual_seed(0)
+    drawn = Fixed(4, Drawn(1))
+    model = Transformer(ModelConfig(8, 32, feed_forward=drawn, attention=drawn))
+    _, trace = model(tokens())
+    for kind in (trace.feed_forward, trace.attention):
+        assert [picks.chunk.unique().tolist() for picks in kind] == [[chunk] for chunk in drawn.map(8)]
+    mod = Transformer(ModelConfig(8, 32, feed_forward=Fixed(4), attention=Fixed(4)))
+    assert model.stored_weights() == mod.stored_weights()
+    mod.load_state_dict(model.state_dict())
+    assert not torch.allclose(mod(tokens())[0], model(tokens())[0])
 
 
 def test_training_picks_are_one_hot_and_every_weight_gets_a_gradient() -> None:
@@ -493,3 +535,21 @@ def test_a_model_that_settles_nothing_is_left_alone() -> None:
     train.settle(model, torch.empty(0, dtype=torch.uint8))
     assert model.feed_forward.settled_picks is None and model.feed_forward.router is not None
     assert all(parameter.requires_grad for parameter in model.parameters())
+
+
+def test_a_training_step_unscales_then_clips_at_one_then_steps(monkeypatch: pytest.MonkeyPatch) -> None:
+    torch.manual_seed(0)
+    model = small(Own(), Own())
+    optimizer = train.optimizer_for(model, 1e-3)
+    assert [group["weight_decay"] for group in optimizer.param_groups] == [train.WEIGHT_DECAY, 0.0]
+    matrices, vectors = (group["params"] for group in optimizer.param_groups)
+    assert all(parameter.dim() >= 2 for parameter in matrices) and all(parameter.dim() < 2 for parameter in vectors)
+    assert len(matrices) + len(vectors) == len(list(model.parameters()))
+    scaler = GradScaler("cpu", enabled=False)
+    calls: list[object] = []
+    monkeypatch.setattr(scaler, "unscale_", lambda optimizer: calls.append("unscale"))
+    monkeypatch.setattr(scaler, "step", lambda optimizer: calls.append("step"))
+    monkeypatch.setattr(torch.nn.utils, "clip_grad_norm_", lambda parameters, norm: calls.append(("clip", norm)))
+    loss = train.step_once(model, optimizer, scaler, tokens(), tokens())
+    assert calls == ["unscale", ("clip", 1.0), "step"]
+    assert loss.item() == pytest.approx(math.log(VOCAB), abs=0.1)

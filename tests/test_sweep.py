@@ -93,12 +93,12 @@ def test_the_short_sweep_is_the_first_budget_at_seed_zero() -> None:
 
 def test_the_first_budget_is_swept_at_seed_zero_and_run_at_one_rate_for_every_seed() -> None:
     assert protocol(ARM, 8000) == [*SHORT, Plan(ARM, 1, 8000, 1e-3), Plan(ARM, 2, 8000, 1e-3)]
-    assert least_steps(8000) == 5 * 8000
+    assert least_steps(ARM, 8000) == 5 * 8000
 
 
 def test_a_longer_budget_starts_from_the_short_sweep() -> None:
     assert protocol(ARM, 32000) == SHORT == protocol(ARM, 128000)
-    assert least_steps(32000) == 3 * 8000 + 4 * 32000
+    assert least_steps(ARM, 32000) == 3 * 8000 + 4 * 32000
 
 
 def test_no_long_run_is_planned_before_the_short_sweep_has_run() -> None:
@@ -194,3 +194,18 @@ def test_each_budget_keeps_its_own_long_sweep() -> None:
     assert chosen(ARM, 32000) == 2e-3
     assert chosen(ARM, 128000) is None
     assert protocol(ARM, 128000) == [*SHORT, long_plan(ARM, 1e-3, 128000), long_plan(ARM, 2e-3, 128000)]
+
+
+def test_a_fixed_map_that_is_not_the_mod_map_trains_at_the_mod_maps_rate_with_no_sweep_of_its_own() -> None:
+    mod, drawn, ends = "both-modern", "both-drawn-d1-modern", "both-ends-modern"
+    assert protocol(drawn, 32000) == protocol(mod, 32000) == [short_plan(mod, rate) for rate in (5e-4, 1e-3, 2e-3)]
+    short(mod, {5e-4: 1.2, 1e-3: 1.1, 2e-3: 1.0})
+    long(mod, {2e-3: 0.9})
+    assert protocol(ends, 32000) == protocol(mod, 32000) == [*protocol(mod, 8000)[:3], long_plan(mod, 1e-3), long_plan(mod, 2e-3)]
+    long(mod, {1e-3: 0.904})
+    for name in (drawn, ends):
+        assert protocol(name, 32000) == [Plan(name, seed, 32000, 2e-3) for seed in SEEDS]
+        assert protocol(name, 8000) == [Plan(name, seed, 8000, 1e-3) for seed in SEEDS]
+        assert least_steps(name, 32000) == 3 * 32000
+    assert protocol("both-c8", 8000) == [Plan("both-c8", seed, 8000, 1e-3) for seed in SEEDS]
+    assert len(protocol(mod, 32000)) == 7

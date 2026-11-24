@@ -38,6 +38,12 @@ weights than the shared model and reach 1.013, above it at all three seeds. Stor
 are held nearly equal and compute is not: the shared model multiplies by about twice the weights
 per token of either plain model.
 
+The fourth round held compute equal instead. The plain modern model of eight modules at
+full width stores 6.4 million weights and reaches 0.982; the shared model does the same
+arithmetic per token with 3.3 million and reaches 1.001, so halving the stored weights
+costs 0.019 on average and at least 0.015 at every seed. Dropping to four modules costs 0.058 against that full model
+and narrowing to width 184 costs 0.031.
+
 The full write-up, with every run, is in [report.md](report.md).
 
 ## A second track: fitting a bank to a trained model
@@ -77,6 +83,11 @@ not about banks a model is trained with.
   models cut to 1, 2, 4 and 6 modules, which draw loss against stored weights; and the fixed
   map, both banks shared with no router, module i always using chunk i mod N, at N = 1, 2, 4
   and 8 chunks. At N = 8 every module has its own chunk and the model must match the full one.
+- **Other fixed maps.** Beside the mod map, a map drawn at random before training and kept
+  for the whole run (each module's chunk drawn uniformly, the draw repeated until every chunk
+  is used, its seed apart from the training seed), and a map that gives the first and the
+  last module chunks of their own and cycles the modules between them through the rest. Each
+  stores exactly what the mod map stores and trains at its learning rate.
 - **Other routers.** For the model with both banks routed: the same router trained with no
   sampling noise (the highest-scoring chunk, gradient through the softmax), and a router that
   scores each chunk by the dot product of a learned key with a query.
@@ -100,7 +111,8 @@ The environment is pinned in `shell.nix` (PyTorch with CUDA); enter it with `nix
 ```sh
 python -m weightbank.train both-routed --seed 0 --steps 8000 --rate 1e-3
 python -m weightbank.loop --gpu-hours 12           # one round: pick a cell, train it, record it
-python -m weightbank.report                        # report.md and chart.png from runs/ and the ledger
+python -m weightbank.report                        # report.md, chart.png and curves.png from runs/ and the ledger
+python -m weightbank.memory both-modern modern     # peak GPU memory of cells, into runs/memory.json
 python -m weightbank.compress                      # compress.md and its charts from runs/compress/
 python -m pytest && python -m mypy                 # tests and type check
 ```

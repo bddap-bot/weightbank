@@ -11,7 +11,7 @@ from statistics import fmean
 from typing import Any
 
 from weightbank import report, train
-from weightbank.configs import model_config
+from weightbank.configs import model_config, rate_source
 from weightbank.ledger import ABANDONED, OPEN, SIDES, STEPS, Cell, Ledger
 from weightbank.sweep import Stuck, least_steps, protocol
 
@@ -57,14 +57,26 @@ def hours(ledger: Ledger, cell: Cell) -> float:
         return 0.0
     steps = cell[STEPS]
     assert isinstance(steps, int)
-    planned = plans(ledger, cell)
+    name = ledger.name(cell)
+    planned = [plan for plan in plans(ledger, cell) if plan.config == name]
     trained = sum(plan.steps for plan in planned if plan.path.exists())
     missing = sum(plan.steps for plan in planned if not plan.path.exists())
-    return max(least_steps(steps) - trained, missing) * seconds_per_step(ledger, cell) / 3600
+    return max(least_steps(name, steps) - trained, missing) * seconds_per_step(ledger, cell) / 3600
 
 
 def sides(ledger: Ledger, comparison: dict[str, Any]) -> list[Cell]:
     return [ledger.cell(comparison[side]) for side in SIDES]
+
+
+def owed(ledger: Ledger, comparison: dict[str, Any]) -> list[Cell]:
+    cells = sides(ledger, comparison)
+    for cell in list(cells):
+        steps = cell[STEPS]
+        assert isinstance(steps, int)
+        source = ledger.parse(rate_source(ledger.name(cell)), steps)
+        if source not in cells:
+            cells.append(source)
+    return cells
 
 
 def unfinished(hypothesis: dict[str, Any]) -> list[dict[str, Any]]:
@@ -84,7 +96,7 @@ def choose(ledger: Ledger, budget: float) -> Choice | None:
         costs = {}
         for index, comparison in enumerate(unsettled):
             try:
-                costs[index] = sum(hours(ledger, cell) for cell in sides(ledger, comparison))
+                costs[index] = sum(hours(ledger, cell) for cell in owed(ledger, comparison))
             except Stuck as error:
                 passed_over.append(f"{hypothesis['id']} (priority {hypothesis['priority']}, a sweep that cannot go on: {error})")
         if not costs:

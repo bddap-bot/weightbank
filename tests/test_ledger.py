@@ -10,7 +10,7 @@ import pytest
 from weightbank import configs
 from weightbank.configs import ROUNDS_ONE_AND_TWO, model_config, plain_words
 from weightbank.ledger import OPEN, PATH, REFUTED, SEEDS, STEPS, SUPPORTED, Cell, Ledger, Row, RunRow, verdict
-from weightbank.model import Fixed, Own, Routed, Settled, Transformer
+from weightbank.model import Drawn, Fixed, Layout, Own, Routed, Settled, Transformer
 
 RUNS = Path("runs")
 
@@ -223,15 +223,22 @@ def test_runs_of_one_cell_that_store_different_weights_are_refused(tmp_path: Pat
 
 def test_each_pick_builds_its_own_kind_of_bank() -> None:
     ledger = Ledger.read()
-    built = {pick: model_config(ledger.cell({"shared": "both", "pick": pick})).feed_forward for pick in ledger.axis("pick").tags}
+    built = {
+        pick: model_config(ledger.cell({"shared": "both", "pick": pick})).feed_forward
+        for pick in ledger.axis("pick").tags
+        if pick != "drawn"
+    }
     assert built == {
         "fixed": Fixed(4),
+        "ends": Fixed(4, Layout.ENDS),
         "routed": Routed(4),
         "argmax": Routed(4, noise=False),
         "keys": Routed(4, keys=True),
         "frozen": Routed(4, settled=Settled.PICKS),
         "stopped": Routed(4, settled=Settled.ROUTER),
     }
+    drawn = {draw: model_config(ledger.cell({"shared": "ff", "pick": "drawn", "draw": draw})).feed_forward for draw in (1, 4)}
+    assert drawn == {1: Fixed(4, Drawn(1)), 4: Fixed(4, Drawn(4))}
     partly = model_config(ledger.cell({"shared": "attn", "pick": "routed", "chunks": 2}))
     assert (partly.feed_forward, partly.attention) == (Own(), Routed(2))
 
@@ -249,3 +256,27 @@ def test_a_chart_label_is_the_plain_words_of_the_axes_and_never_a_tag() -> None:
         tags = {tag for axis in ledger.model_axes for value, tag in axis.tags.items() if axis.words[value] != tag}
         assert not tags & set(words)
         assert all(axis.words[cell[axis.name]] in words for axis in ledger.model_axes if cell[axis.name] != axis.default)
+
+
+@pytest.mark.parametrize(
+    ("cell", "refusal"),
+    [
+        ({"shared": "both", "pick": "drawn"}, "a draw goes with"),
+        ({"shared": "both", "draw": 1}, "a draw goes with"),
+        ({"shared": "both", "pick": "routed", "draw": 2}, "a draw goes with"),
+        ({"draw": 1}, "with nothing shared"),
+        ({"shared": "both", "pick": "ends", "chunks": 2}, "at least 3 chunks"),
+        ({"shared": "attn", "pick": "drawn", "draw": 1, "modules": 2}, "cannot use all"),
+    ],
+)
+def test_a_cell_whose_map_cannot_be_laid_out_is_refused_before_any_run(cell: Cell, refusal: str) -> None:
+    with pytest.raises(ValueError, match=refusal):
+        model_config(Ledger.read().cell(cell))
+
+
+def test_a_map_other_than_the_mod_map_takes_its_rate_from_the_cell_that_has_a_sweep() -> None:
+    assert configs.rate_source("both-drawn-d1-modern") == "both-modern" == configs.rate_source("both-ends-modern")
+    assert configs.rate_source("both-drawn-d2-c8") == "full" == configs.rate_source("both-c8")
+    assert configs.rate_source("attn-ends-c2") == "attn-c2"
+    for name in ("full", "both", "both-routed", "plain-l4-modern", "both-c1-r24"):
+        assert configs.rate_source(name) == name

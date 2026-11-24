@@ -169,6 +169,34 @@ def settle(model: Transformer, text: Tensor) -> None:
         bank.settle([max(range(len(row)), key=row.__getitem__) for row in stats.counts])
 
 
+def optimizer_for(model: Transformer, peak_rate: float) -> torch.optim.AdamW:
+    matrices = [parameter for parameter in model.parameters() if parameter.dim() >= 2]
+    vectors = [parameter for parameter in model.parameters() if parameter.dim() < 2]
+    return torch.optim.AdamW(
+        [
+            {"params": matrices, "weight_decay": WEIGHT_DECAY},
+            {"params": vectors, "weight_decay": 0.0},
+        ],
+        lr=peak_rate,
+        betas=(0.9, 0.95),
+    )
+
+
+def step_once(
+    model: Transformer, optimizer: torch.optim.AdamW, scaler: GradScaler, inputs: Tensor, targets: Tensor
+) -> Tensor:
+    with torch.autocast(inputs.device.type, dtype=torch.float16):
+        logits, _ = model(inputs)
+    loss = F.cross_entropy(logits.float().flatten(0, 1), targets.flatten())
+    optimizer.zero_grad(set_to_none=True)
+    torch.autograd.backward(scaler.scale(loss))
+    scaler.unscale_(optimizer)
+    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    scaler.step(optimizer)
+    scaler.update()
+    return loss
+
+
 def train(plan: Plan) -> Run:
     name, seed, steps = plan.config, plan.seed, plan.steps
     device = torch.device("cuda")
@@ -182,16 +210,7 @@ def train(plan: Plan) -> Run:
     model = Transformer(config(name)).to(device)
     stored = model.stored_weights()
     print(f"stored weights {stored}", flush=True)
-    matrices = [parameter for parameter in model.parameters() if parameter.dim() >= 2]
-    vectors = [parameter for parameter in model.parameters() if parameter.dim() < 2]
-    optimizer = torch.optim.AdamW(
-        [
-            {"params": matrices, "weight_decay": WEIGHT_DECAY},
-            {"params": vectors, "weight_decay": 0.0},
-        ],
-        lr=plan.peak_rate,
-        betas=(0.9, 0.95),
-    )
+    optimizer = optimizer_for(model, plan.peak_rate)
     scaler = GradScaler()
     curve: list[list[float]] = []
     paces: list[float] = []
@@ -202,15 +221,7 @@ def train(plan: Plan) -> Run:
         for group in optimizer.param_groups:
             group["lr"] = rate(step, steps, plan.peak_rate)
         inputs, targets = data.sample(corpus.train, BATCH, CONTEXT, generator)
-        with torch.autocast(device.type, dtype=torch.float16):
-            logits, _ = model(inputs)
-        loss = F.cross_entropy(logits.float().flatten(0, 1), targets.flatten())
-        optimizer.zero_grad(set_to_none=True)
-        torch.autograd.backward(scaler.scale(loss))
-        scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        scaler.step(optimizer)
-        scaler.update()
+        loss = step_once(model, optimizer, scaler, inputs, targets)
         if (step + 1) % LOG_EVERY == 0:
             logged = loss.item()
             paces.append((time.monotonic() - started) / LOG_EVERY)

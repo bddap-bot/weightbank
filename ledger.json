@@ -14,15 +14,29 @@
   },
   {
    "name": "pick",
-   "meaning": "how a module gets its chunk: fixed is module i to chunk i mod N; routed is a per-token learned pick sampled with noise; argmax the same without noise; keys scores a learned key per chunk; frozen is routed until a quarter of training, then each module keeps its most common pick; stopped is routed with the router's weights held still after that quarter",
+   "meaning": "how a module gets its chunk: fixed is module i to chunk i mod N; ends gives the first module and the last a chunk of their own and cycles the modules between them through the rest; drawn is a map drawn at random before training and kept for the whole run (each module's chunk is drawn uniformly, and the modules are drawn again together until every chunk is used); routed is a per-token learned pick sampled with noise; argmax the same without noise; keys scores a learned key per chunk; frozen is routed until a quarter of training, then each module keeps its most common pick; stopped is routed with the router's weights held still after that quarter",
    "default": "fixed",
    "values": [
     ["fixed", "fixed", "fixed map"],
+    ["ends", "ends", "fixed map with the first and last modules on chunks of their own"],
+    ["drawn", "drawn", "fixed map drawn at random"],
     ["routed", "routed", "picked per token"],
     ["argmax", "routed-argmax", "picked per token without sampling noise"],
     ["keys", "routed-keys", "picked per token by a key per chunk"],
     ["frozen", "frozen-picks", "picks frozen after a quarter of training"],
     ["stopped", "stopped-router", "router stopped after a quarter of training"]
+   ]
+  },
+  {
+   "name": "draw",
+   "meaning": "which map a drawn pick uses: the seed of the generator the map is drawn from, apart from the training seed, so one draw is one map at every training seed; 0 with any other pick",
+   "default": 0,
+   "values": [
+    [0, "d0", "no draw"],
+    [1, "d1", "draw 1"],
+    [2, "d2", "draw 2"],
+    [3, "d3", "draw 3"],
+    [4, "d4", "draw 4"]
    ]
   },
   {
@@ -46,7 +60,8 @@
     [2, "plain-l2", "2 modules"],
     [4, "plain-l4", "4 modules"],
     [6, "plain-l6", "6 modules"],
-    [8, "plain-l8", "8 modules"]
+    [8, "plain-l8", "8 modules"],
+    [16, "l16", "16 modules"]
    ]
   },
   {
@@ -95,6 +110,19 @@
    ]
   },
   {
+   "id": "halving-stored-weights-costs-loss-at-equal-compute",
+   "priority": 1,
+   "status": "supported",
+   "statement": "At equal compute in the modern architecture, halving the stored weights costs loss: the plain model of eight modules at width 256, which owns all eight chunks of each kind, reaches a lower loss than eight modules sharing four chunks through the fixed map. The two multiply by the same number of weights per token; the shared model stores 3,289,936 weights, 51% of the plain model's 6,444,192. Supported means sharing has a price at equal compute, and the differences are its size; refuted would mean the shared model reaches the lower loss with half the weights; open, that three seeds do not separate the two.",
+   "settle": [
+    {
+     "lower": {"steps": 32000, "architecture": "modern"},
+     "higher": {"shared": "both", "steps": 32000, "architecture": "modern"},
+     "differences": [-0.0154, -0.0217, -0.0209]
+    }
+   ]
+  },
+  {
    "id": "reuse-survives-the-modern-architecture",
    "priority": 2,
    "status": "supported",
@@ -117,6 +145,30 @@
      "lower": {"shared": "both", "steps": 32000, "architecture": "modern"},
      "higher": {"width": 184, "steps": 32000, "architecture": "modern"},
      "differences": [-0.0115, -0.0097, -0.0152]
+    }
+   ]
+  },
+  {
+   "id": "the-mod-map-beats-a-map-drawn-at-random",
+   "priority": 2,
+   "status": "open",
+   "statement": "Which module uses which chunk matters: in the modern architecture the mod map, where every chunk serves two modules four apart, reaches a lower loss than a fixed map drawn at random over the same four chunks. A drawn map uses every chunk, so it stores exactly the mod map's weights, and it trains at the mod map's learning rate. One comparison per drawn map: supported means every drawn map is worse, refuted that every one is better, and open that the maps do not all fall on one side by more than the spread of training seeds.",
+   "settle": [
+    {
+     "lower": {"shared": "both", "steps": 32000, "architecture": "modern"},
+     "higher": {"shared": "both", "pick": "drawn", "draw": 1, "steps": 32000, "architecture": "modern"}
+    },
+    {
+     "lower": {"shared": "both", "steps": 32000, "architecture": "modern"},
+     "higher": {"shared": "both", "pick": "drawn", "draw": 2, "steps": 32000, "architecture": "modern"}
+    },
+    {
+     "lower": {"shared": "both", "steps": 32000, "architecture": "modern"},
+     "higher": {"shared": "both", "pick": "drawn", "draw": 3, "steps": 32000, "architecture": "modern"}
+    },
+    {
+     "lower": {"shared": "both", "steps": 32000, "architecture": "modern"},
+     "higher": {"shared": "both", "pick": "drawn", "draw": 4, "steps": 32000, "architecture": "modern"}
     }
    ]
   },
@@ -157,8 +209,46 @@
    ]
   },
   {
-   "id": "picking-too-few-steps",
+   "id": "own-ends-beat-the-all-shared-map",
    "priority": 4,
+   "status": "open",
+   "statement": "At equal stored weights, giving the first and the last module chunks of their own and looping the modules between them beats sharing every chunk alike: with four chunks for eight modules in the modern architecture, the map 0 1 2 1 2 1 2 3 reaches a lower loss than the mod map 0 1 2 3 0 1 2 3, which stores the same weights.",
+   "settle": [
+    {
+     "lower": {"shared": "both", "pick": "ends", "steps": 32000, "architecture": "modern"},
+     "higher": {"shared": "both", "steps": 32000, "architecture": "modern"}
+    }
+   ]
+  },
+  {
+   "id": "a-pick-freed-from-the-fixed-map-beats-a-pick-learned-from-the-start",
+   "priority": 4,
+   "status": "open",
+   "statement": "A per-token pick that starts as the fixed map and is freed only once the chunks have specialised beats a pick learned from the first step: every module computes through the mod map for the first part of training, then a router initialised to reproduce that map takes over. A chunk has to be something stable before choosing among chunks can mean anything. No cell expresses this yet: it needs a pick value that hands over from the map to a router. Its cell would train at the routed model's pace, about 8 GPU-hours under the rate protocol.",
+   "settle": []
+  },
+  {
+   "id": "the-map-matters-more-with-more-modules",
+   "priority": 7,
+   "status": "open",
+   "statement": "With sixteen modules over the same four chunks, where a drawn map can differ from the mod map in more places than with eight, the mod map reaches a lower loss than a map drawn at random. Both cells store the weights of the eight-module shared model plus eight modules' norms, and compute twice as much per token. The loop prices the pair at 7.5 GPU-hours from the pace of eight modules; sixteen modules take about twice the time per step, so about 15.",
+   "settle": [
+    {
+     "lower": {"shared": "both", "modules": 16, "steps": 32000, "architecture": "modern"},
+     "higher": {
+      "shared": "both",
+      "pick": "drawn",
+      "draw": 1,
+      "modules": 16,
+      "steps": 32000,
+      "architecture": "modern"
+     }
+    }
+   ]
+  },
+  {
+   "id": "picking-too-few-steps",
+   "priority": 5,
    "status": "open",
    "statement": "A per-input pick loses only because training is short: at 128,000 steps the routed model reaches a lower loss than the fixed map.",
    "settle": [
@@ -170,7 +260,7 @@
   },
   {
    "id": "compress-a-trained-model",
-   "priority": 5,
+   "priority": 6,
    "status": "open",
    "statement": "A trained unshared model can be compressed into a shared bank and keep a lower loss than the same shared model trained from scratch. No cell expresses this yet: it needs an axis for how training starts.",
    "settle": []
@@ -301,6 +391,29 @@
    "differences": [-0.0115, -0.0097, -0.0152],
    "reading": "32000/both-modern reached 1.0012 nats per byte with 3,289,936 stored weights at rate 0.002; 32000/plain-w184-modern reached 1.0133 with 3,360,024 at rate 0.001. Lower minus higher by seed: -0.0115, -0.0097, -0.0152. sharing-beats-a-narrowed-modern-model went from open to supported.",
    "note": "In plain words: in a transformer built the way current ones are, eight modules sharing four chunks by a fixed map beat the plain model that keeps all eight modules and is narrowed to about the same stored weights, by 0.0121 on average and at every seed. Width 184 is the nearest width (a width is a multiple of 8, so that each of four heads rotates its dimensions in pairs) and stores 70,088 more weights than the shared model (2.1%), so the plain side is the larger; width 176 would store 6.4% fewer. If a modern plain model gains from width as the classic ones do, the margin at exactly equal stored weights is a little larger, which no second modern width has been run to show. This is the stronger of the two plain controls: round 2's margin over the plain model of four modules was 0.0391, and the narrowed control is 0.0270 below that one, which leaves 0.0121. The plain model of four modules reads 0.0083 worse in the modern architecture than in the classic one (1.0403 against 1.0320), while the shared model reads 0.0122 better (1.0012 against 1.0134) and the narrowed model 0.0081 better than the classic narrower curve at its stored weights (1.0133 against 1.0214). So of the two modern plain cells run, one reads worse than its classic counterpart and one better; no run isolates why. In the classic architecture the shared model is 0.0080 below the narrower curve at equal stored weights. What the round does not show: a modern plain curve (the control is one width, 2.1% larger, not an interpolation); another mix of depth and width at that storage; another size, bank size, budget or dataset; a per-token pick in the modern architecture; and compute, which is not held equal: the shared model runs eight modules at width 256, which multiply by about 1.9 times the weights per token of the narrowed model, though a training step took the same time for both, about 110 ms. The long budget moved the narrowed model's best rate from 0.002 to 0.001, by 0.0003 in loss, so the rate sweep added a run at 0.0005; that run is 1.0 of the 1.1 GPU-hours over the estimate, and the rest is pace, 111 ms a step against the 108 of the tried cell the estimate priced it from."
+  },
+  {
+   "hypothesis": "halving-stored-weights-costs-loss-at-equal-compute",
+   "lower": {"steps": 32000, "architecture": "modern"},
+   "higher": {"shared": "both", "steps": 32000, "architecture": "modern"},
+   "budget_gpu_hours": 12.0,
+   "estimated_gpu_hours": 4.6,
+   "why": "halving-stored-weights-costs-loss-at-equal-compute (priority 1) is the highest-priority open hypothesis with an unfinished comparison that fits 12 GPU-hours; the cheapest is 32000/modern against 32000/both-modern, estimated at 4.6 GPU-hours.",
+   "runs": [
+    "runs/32000/modern-lr0.001-s0.json",
+    "runs/32000/modern-lr0.001-s1.json",
+    "runs/32000/modern-lr0.001-s2.json",
+    "runs/32000/modern-lr0.002-s0.json",
+    "runs/8000/modern-lr0.0005-s0.json",
+    "runs/8000/modern-lr0.001-s0.json",
+    "runs/8000/modern-lr0.002-s0.json"
+   ],
+   "rows": ["32000/modern", "8000/modern"],
+   "gpu_hours": 4.3,
+   "statuses": {"halving-stored-weights-costs-loss-at-equal-compute": ["open", "supported"]},
+   "differences": [-0.0154, -0.0217, -0.0209],
+   "reading": "32000/modern reached 0.9819 nats per byte with 6,444,192 stored weights at rate 0.001; 32000/both-modern reached 1.0012 with 3,289,936 at rate 0.002. Lower minus higher by seed: -0.0154, -0.0217, -0.0209. halving-stored-weights-costs-loss-at-equal-compute went from open to supported.",
+   "note": "In plain words: this is the pair to judge sharing by when compute is what is held equal. Both models run eight modules at width 256 and multiply by the same number of weights per token; the plain one owns all eight chunks of each kind and stores 6,444,192 weights, the shared one reuses four and stores 3,289,936, 51% as many. The plain model reaches 0.9819 and the shared one 1.0012, so halving the stored weights costs 0.0193 nats per byte on average, at every seed (0.0154, 0.0217, 0.0209), where each model's seeds have a standard deviation of 0.002 to 0.003. The price is small beside what the same halving costs a plain model that gives up modules or width: four modules at width 256 reach 1.0403, 0.0584 above the full plain model, and eight modules at width 184 reach 1.0133, 0.0314 above it. What the round does not show: the same pair at another size, bank size, budget or dataset, or the classic pair under one protocol (there the full model reads 0.9833 and the shared one 1.0134, 0.0301 apart). The plain model's best rate is 0.001 and the shared model's 0.002, each chosen on seed 0; the plain model at 0.002 reads 0.9852 at seed 0, 0.0017 above its run at 0.001."
   }
  ],
  "cells": [
@@ -662,6 +775,19 @@
     {"file": "runs/32000/full-lr0.002-s1.json", "rate": 0.002, "seed": 1, "loss": 0.9843, "seconds": 1569},
     {"file": "runs/32000/full-lr0.002-s2.json", "rate": 0.002, "seed": 2, "loss": 0.9837, "seconds": 1509},
     {"file": "runs/32000/full-lr0.004-s0.json", "rate": 0.004, "seed": 0, "loss": 0.984, "seconds": 1865}
+   ]
+  },
+  {
+   "cell": {"steps": 32000, "architecture": "modern"},
+   "stored_weights": 6444192,
+   "rate": 0.001,
+   "loss": 0.9819,
+   "seed_sd": 0.0022,
+   "runs": [
+    {"file": "runs/32000/modern-lr0.001-s0.json", "rate": 0.001, "seed": 0, "loss": 0.9835, "seconds": 3134},
+    {"file": "runs/32000/modern-lr0.001-s1.json", "rate": 0.001, "seed": 1, "loss": 0.9827, "seconds": 3109},
+    {"file": "runs/32000/modern-lr0.001-s2.json", "rate": 0.001, "seed": 2, "loss": 0.9794, "seconds": 3115},
+    {"file": "runs/32000/modern-lr0.002-s0.json", "rate": 0.002, "seed": 0, "loss": 0.9852, "seconds": 3533}
    ]
   },
   {
@@ -1385,6 +1511,15 @@
     {"file": "runs/8000/full-lr0.001-s1.json", "rate": 0.001, "seed": 1, "loss": 1.0744, "seconds": 409},
     {"file": "runs/8000/full-lr0.001-s2.json", "rate": 0.001, "seed": 2, "loss": 1.0772, "seconds": 426},
     {"file": "runs/8000/full-lr0.002-s0.json", "rate": 0.002, "seed": 0, "loss": 1.0538, "seconds": 397}
+   ]
+  },
+  {
+   "cell": {"steps": 8000, "architecture": "modern"},
+   "stored_weights": 6444192,
+   "runs": [
+    {"file": "runs/8000/modern-lr0.0005-s0.json", "rate": 0.0005, "seed": 0, "loss": 1.061, "seconds": 845},
+    {"file": "runs/8000/modern-lr0.001-s0.json", "rate": 0.001, "seed": 0, "loss": 1.0575, "seconds": 801},
+    {"file": "runs/8000/modern-lr0.002-s0.json", "rate": 0.002, "seed": 0, "loss": 1.0591, "seconds": 785}
    ]
   },
   {

@@ -265,3 +265,31 @@ def test_the_loop_waits_while_the_gpu_is_full(monkeypatch: pytest.MonkeyPatch) -
     assert slept == [60, 60]
 
 
+
+
+def test_a_cell_that_borrows_a_rate_not_chosen_yet_is_planned_through_the_cell_it_borrows_from() -> None:
+    mod: Cell = {"shared": "both", "modules": 16, "architecture": "modern", STEPS: 32000}
+    drawn: Cell = {**mod, "pick": "drawn", "draw": 1}
+    made = ledger(hypothesis("more-modules", 1, (mod, drawn)))
+    choice = loop.choose(made, 1000.0)
+    assert choice is not None and not choice.passed_over
+    assert loop.plans(made, made.cell(drawn)) == loop.plans(made, made.cell(mod)) != []
+    assert {plan.config for plan in loop.lacking(made, choice.comparison)} == {"both-l16-modern"}
+    pace = loop.seconds_per_step(made, made.cell(drawn))
+    assert loop.hours(made, made.cell(drawn)) == pytest.approx(3 * 32000 * pace / 3600)
+    assert loop.hours(made, made.cell(mod)) == pytest.approx((3 * 8000 + 4 * 32000) * pace / 3600)
+    for rate in (5e-4, 1e-3, 2e-3):
+        record(Plan("both-l16-modern", 0, 8000, rate), 1.3 + rate, seconds=1600.0)
+    made = ledger(hypothesis("more-modules", 1, (mod, drawn)))
+    assert loop.hours(made, made.cell(drawn)) == pytest.approx(3 * 32000 * 0.2 / 3600)
+    assert loop.hours(made, made.cell(mod)) == pytest.approx(4 * 32000 * 0.2 / 3600)
+    other: Cell = {**mod, "pick": "drawn", "draw": 2}
+    two_draws = ledger(hypothesis("two-draws", 1, (drawn, other)))
+    choice = loop.choose(two_draws, 1000.0)
+    assert choice is not None and choice.hours == pytest.approx((2 * 3 + 4) * 32000 * 0.2 / 3600)
+    record(Plan("both-l16-modern", 0, 32000, 5e-4), 1.0, seconds=6400.0)
+    record(Plan("both-l16-modern", 0, 32000, 1e-3), 1.004, seconds=6400.0)
+    record(Plan("both-drawn-d1-l16-modern", 0, 32000, 5e-4), 1.0, seconds=6400.0)
+    made = ledger(hypothesis("more-modules", 1, (mod, drawn)))
+    assert loop.hours(made, made.cell(drawn)) == pytest.approx(2 * 32000 * 0.2 / 3600)
+    assert loop.plans(made, made.cell(drawn)) == [Plan("both-drawn-d1-l16-modern", seed, 32000, 5e-4) for seed in (0, 1, 2)]

@@ -13,7 +13,69 @@ the first experiment's 4 and 8, and the plain models they are compared with.
 A gap is a configuration's mean validation loss minus the better of the two plain curves read
 at its stored weights; negative means the configuration beats a plain model of its size.
 
+## How a run ends
+
+A run ends after a fixed number of optimizer steps, 8,000 or 32,000, set before it starts.
+Nothing watches the validation loss: no run stops early for having learned enough, and none
+is trained until its loss stops falling. The one exception is a run whose training loss
+stops being a finite number, which is ended and recorded as lost. The learning rate climbs for 200 steps and then follows a cosine down to a tenth of
+its peak, which it reaches at the last step. The loss reported for a run is the validation
+loss of the weights as they stand after that last step, over the whole validation split; no
+earlier or best checkpoint is kept.
+
+No run here is converged. The table sets each cell stopped at 8,000 steps (seed 0, the best
+of the three rates tried) beside the same cell stopped at 32,000 (seed 0), and gives how far
+the logged loss moved over the last 2,000 and the last 500 steps of the long run, averaged
+over its three seeds. Four times the steps bought 0.064 to 0.089 at
+every cell. Over the last 2,000 steps of the long run, by which point the rate is within a
+tenth of its floor, the loss still falls by 0.002 to 0.004; over the last 500 it moves by
+less than 0.001 in either direction. The curve is flat at the last step because the
+schedule has brought the rate to its floor there, not because the model has stopped
+learning: a longer run would end lower. Every comparison in this report is therefore
+between runs of equal steps, and none is between converged models. Whether the order of
+the model that picks per token and the fixed map survives four times the steps again is an
+open hypothesis in the ledger (`picking-too-few-steps`).
+
+{{run-end}}
+
+![Validation loss along training](curves.png)
+
+The curves are the four modern cells the reading leads with, logged every 500 steps on the
+first 2,048 validation windows, which read about 0.02 above the loss over the whole split.
+The plain model at full width is the lowest from about step 2,000 on and the plain model of
+four modules the highest from step 1,000 on. The shared model starts below the plain model
+narrowed to width 184, runs 0.002 to 0.005 above it from about step 8,000 to step 18,500,
+crosses back between steps 19,000 and 20,000 and ends 0.012 below it. All four are flat
+over the last 500 steps.
+
 ## Reading
+
+The pair to judge sharing by holds compute equal. In the modern architecture, eight modules
+at width 256 that each own their weights store 6,444,192 weights and reach 0.9819 nats per
+byte at 32,000 steps. The same eight modules sharing four chunks through the fixed map store
+3,289,936, 51% as many, and reach 1.0012. The two multiply by the same number of weights
+per token, so the difference is what halving the stored weights costs at equal compute:
+0.019 on average, and 0.015, 0.022 and 0.021 at the three seeds, where each model's seeds
+have a standard deviation of 0.002 to 0.003. Sharing is not free. It is the cheapest of the
+three ways tried here of storing half the weights: against the same full model, dropping to
+four modules costs 0.058 and narrowing all eight to width 184 costs 0.031, and those two
+also do about half the arithmetic per token, which sharing does not save. On the GPU the
+shared model holds 13 MiB of weights against the full model's 25, and that is nearly all
+it saves: a batch of 256 windows peaks at 508 MiB for one and 507 for the other, and a
+training step at 1,879 and 1,916, where the 37 MiB between them are the gradient and
+optimizer copies of the weights the shared model does not have (the table under "GPU
+memory").
+
+The fixed map is not new: sending module i to chunk i mod N is the cycle strategy of Takase
+and Kiyono (2021, "Lessons on Parameter Sharing across Layers in Transformers",
+arXiv:2104.06022), which stacks M layers with independent parameters and repeats them in
+the same order, and which they present as relaxing the sharing of one layer's parameters
+with all layers, as in Universal Transformers (Dehghani et al., arXiv:1807.03819). A
+vendor's release page for a model of about 9 billion parameters, SenseNova Loop-9B,
+describes reuse across layers at that scale, in a layout with ends of its own: by the
+vendor's account it stores 32 decoder layers and computes 56, running the middle 24 twice
+with the same weights and the first four and last four once. No number of theirs is checked here. A map with ends of its own is
+in the ledger as an open hypothesis (`own-ends-beat-the-all-shared-map`).
 
 Three findings of the first experiment held in sign and shrank in size: attention routed
 stays above the plain curve (+0.026 at the first budget, +0.021 at the long one), both routed
@@ -30,8 +92,8 @@ choosing a chunk per token costs loss against a plain model and against fixed sh
 same weights, and fixed sharing is the only arrangement here that beats a plain model of
 equal storage.
 
-The loop described below has since run three rounds at the long budget; the cells they
-tried are the stars on the chart. A low-rank correction per module on one shared chunk does
+The loop described below has since run four rounds at the long budget; the cells they
+tried are the stars on the chart. The fourth is the equal-compute pair above. A low-rank correction per module on one shared chunk does
 not beat a second chunk at equal stored weights. Rounds 2 and 3 took the fixed map, eight
 modules reusing four chunks with no router, into a modern transformer (rotary positions,
 root-mean-square norms, a gated feed-forward) and set it against two plain models. The
@@ -60,10 +122,11 @@ full width or eight modules narrowed. Round 2's 0.039 was measured against the w
 two controls. The modern plain model of four modules reads 0.008 worse than the same cell in
 the classic architecture, while the modern shared model and the modern narrowed model read
 better than their classic counterparts, by 0.012 and 0.008 (the table under "The modern
-cells beside the classic architecture"). Of the two modern plain cells run, then, one reads
-worse than its classic counterpart and one reads better, the second against an interpolated
-classic curve and not a run of its own width, so the plain model reading worse is not
-general to modern plain models here. No run isolates why the cell of four modules reads
+cells beside the classic architecture"). Of the three modern plain cells run, then, one reads
+worse than its classic counterpart, one reads better, against an interpolated classic curve
+and not a run of its own width, and the full model reads level with it (0.001 lower, inside
+its seed spread), so the plain model reading worse is not general to modern plain models
+here. No run isolates why the cell of four modules reads
 worse, and no cause is claimed. Against the control that does not read worse the margin is
 0.012, under a third of 0.039.
 
@@ -73,9 +136,11 @@ modern plain control is one width and one depth: it is 2.1% larger than the shar
 instead of an interpolation between two widths, and no other mix of depth and width at that
 storage, such as six narrower modules, has been run in the modern architecture. Learning
 rates are chosen on seed 0, and the narrowed model's two best rates end 0.0003 apart in
-loss. Stored weights are held nearly equal and compute is not: the shared model runs eight modules
-at width 256, which multiply by about 1.9 times the weights per token of eight modules at
-width 184 and twice those of four modules at width 256. On this GPU a training step of the
+loss. Against these two controls stored weights are held nearly equal and compute is not: the
+shared model runs eight modules at width 256, which multiply by about 1.9 times the weights
+per token of eight modules at width 184 and twice those of four modules at width 256; the
+pair at the head of this reading is the one that holds compute equal and lets storage
+differ. On this GPU a training step of the
 shared model and of the narrowed one took the same time, about 110 ms. Whether a per-token
 pick fares differently in the modern architecture has not been run.
 
@@ -91,9 +156,11 @@ are drawn side by side so that none hides another, which the chart notes under i
 Points are means of three seeds. A star is a cell with three seeds at this budget beyond
 those of the first two experiments, tried by the loop described next; it is drawn just
 right of its stored weights so that it hides no point of equal size. The two lines and the
-other points are the classic architecture; the three stars of the modern architecture are
-read against one another, not against the lines: the shared model lowest, the plain model
-narrowed to width 184 above it, and the plain model of four modules highest. The legend label of every point and
+other points are the classic architecture; the four stars of the modern architecture are
+read against one another, not against the lines: at about 3.3 million stored weights the
+shared model lowest, the plain model narrowed to width 184 above it and the plain model of
+four modules highest, and at 6.4 million the plain model of eight modules at full width,
+below all three. The legend label of every point and
 star is spelled from the plain words the ledger gives each axis value: what the cell
 shares, the values it has off the default, and for a cell that shares weights also how a
 module gets its chunk and how many chunks a bank holds. A line's label opens with the same
@@ -182,14 +249,65 @@ learning rate.
 {{beside-classic}}
 
 In the modern architecture the shared model reads 0.012 lower than its classic counterpart
-and the narrowed plain model 0.008 lower, while the plain model of four modules reads 0.008
+and the narrowed plain model 0.008 lower, the full plain model reads level with its own
+(0.001 lower, with seeds on both sides), and the plain model of four modules reads 0.008
 higher. That cell is above its classic twin at every seed, by 0.002 to 0.013, and its seeds
-have a standard deviation of 0.007, the widest of the three modern cells. The two plain
-cells differ in depth and width at once (four modules at width 256, eight at width 184), and
+have a standard deviation of 0.007, the widest of the four modern cells. The two plain
+cells that move differ in depth and width at once (four modules at width 256, eight at width 184), and
 no run varies one without the other or changes one part of the modern design at a time, so
 the table shows where the modern plain model reads worse and not why. What it changes is the
 size of the gain from sharing: the shared model's margin over the plain model of four
 modules, 0.039, is about three times its margin over the narrowed one, 0.012.
+
+### GPU memory
+
+Peak memory held by PyTorch's allocator on the GPU while a cell runs, measured by
+`python -m weightbank.memory` on freshly initialised weights and random bytes: the weights
+alone as 32-bit floats; one forward pass at inference over 1 window of 256 bytes and over
+the 256 windows of a validation batch, with nothing kept for gradients; and three training
+steps of 64 windows, with the gradients and the optimizer's two moments per weight. Every
+peak includes the weights. It is the allocator's peak and not the process total, which adds
+the CUDA context, the same for every cell, and it leaves out the 95 MiB
+of text a training run also keeps on the GPU.
+
+{{memory}}
+
+At inference the shared model saves the weights it does not store and nothing else. Its weights take 13
+MiB against the full plain model's 25. A pass over one window peaks 8 MiB above the weights
+for the shared model and 14 MiB above them for the plain one; a 16-bit copy of the weights
+would take 6 and 12 of those, and the pass runs as validation does, under 16-bit autocast
+over 32-bit weights. Over 256 windows the activations are
+nearly all of the peak and the two models are level, at 508 and 507 MiB. In training the
+plain model's 37 MiB more is three further copies of its 12 MiB of extra weights, a
+gradient and two optimizer moments. The plain model of four modules computes half as much
+and trains in about half the memory. The model narrowed to width 184 peaks at 989 MiB over
+256 windows, more than the full-width model. A one-off probe of plain modern models of
+eight modules at seven widths, measured the same way and not kept in `runs/memory.json`,
+peaks at 309, 373, 440 and 507 MiB at widths 160, 192, 224 and 256, whose four heads each
+have a multiple of 8 dimensions, and at 968, 989 and 1,027 MiB at widths 176, 184 and 200,
+whose heads do not. The probe shows where the larger peak falls and not what causes it.
+
+### Fixed maps: the mod map, maps drawn at random, and own ends
+
+A fixed map says which chunk each module computes with, for the whole run and for every
+token. The mod map sends module i to chunk i mod N. The map with own ends gives the first
+module and the last a chunk each that no other module uses and cycles the modules between
+them through the remaining chunks: 0 1 2 1 2 1 2 3 for eight modules over four chunks. A drawn map is drawn before training
+from a random generator seeded with the draw's number alone, so one draw is one map at
+every training seed, and the training seed still sets the initial weights and the batches.
+Each module's chunk is drawn uniformly and independently; a draw that leaves a chunk unused
+is thrown away whole and drawn again, so a drawn map always uses the whole bank and stores
+exactly the weights of the mod map. An unused chunk therefore never arises and never has to
+be counted: a map that left one out would be a smaller bank, which the `chunks` axis
+already covers. A drawn map may put neighbouring modules on one chunk and may load the
+chunks unevenly. Which chunk is called 0 means nothing, so the table numbers each map's
+chunks in order of first use; two draws that give the same row are the same map. A map
+other than the mod map trains at the mod map's learning rate, so that the map is the only
+thing that differs.
+
+{{maps}}
+
+{{map-spread}}
 
 ### Every cell
 
@@ -266,6 +384,11 @@ finite is recorded with an infinite loss and loses.
 
 {{long-sweep}}
 
+Two kinds of cell have no sweep of their own and train at another cell's rate, so that
+the pair differs in one thing: `both-c8`, the full control computed through the bank code,
+at the full control's rate; and a fixed map other than the mod map at the mod map's rate.
+At the first budget such a cell runs its three seeds at 1e-3 like any other.
+
 Limits of this choice: it is made on one seed, so where two rates differ by less than the
 seed spread the pick between them is arbitrary; and a winner that is the best short rate
 and leads by 0.005 or less has no rate tried beyond it, so a rate beyond it could be better
@@ -276,8 +399,6 @@ by a similar amount. The feed-forward routed gap is of that size at both budgets
 - The long sweep starts from two rates per configuration and adds more only under the rule
   above. Six configurations ended with two long rates; a third for each would have added
   about three hours of the GPU.
-- `both-c8` has no sweep of its own: it is the full control computed through the bank code,
-  so it trains at the full control's rate, which keeps the two paired.
 - The two other routers were run for the model with both banks routed only. Feed-forward-only
   and attention-only versions of them would be four more configurations, about 21 hours of
   the GPU, and the both-routed pair already answers what they were added to ask.
