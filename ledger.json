@@ -179,12 +179,13 @@
   {
    "id": "picking-lock-in",
    "priority": 3,
-   "status": "open",
+   "status": "supported",
    "statement": "A per-input pick loses to the fixed map because routers lock in early, near-random picks: with each module frozen to its router's most common pick after a quarter of training, the model still loses to the fixed map of module i to chunk i mod N.",
    "settle": [
     {
      "lower": {"shared": "both", "steps": 32000},
-     "higher": {"shared": "both", "pick": "frozen", "steps": 32000}
+     "higher": {"shared": "both", "pick": "frozen", "steps": 32000},
+     "differences": [-0.0472, -0.0627, -0.0547]
     }
    ]
   },
@@ -494,6 +495,29 @@
    "differences": [-0.0015, 0.003, -0.0011],
    "reading": "32000/both-modern reached 1.0012 nats per byte with 3,289,936 stored weights at rate 0.002; 32000/both-drawn-d4-modern reached 1.0011 with 3,289,936 at rate 0.002. Lower minus higher by seed: -0.0015, +0.0030, -0.0011. No status changed.",
    "note": "A drawn map is fixed for the whole run and the same at every training seed: each of the eight modules' chunks is drawn uniformly from a generator seeded with the draw's number alone, apart from the training seed, and a draw that leaves a chunk unused is thrown away whole and drawn again, so every map uses all four chunks and stores exactly the mod map's 3,289,936 weights; an unused chunk never has to be counted. It trains at the mod map's learning rate, 0.002, with no sweep of its own. Draw 4 is the map 0 1 2 3 1 1 1 0, numbering chunks in order of first use; it is level with the mod map: 1.0011 against 1.0012, with one seed of three below. With this round all four drawn maps have run, so five distinct maps have been trained, the mod map among them. In plain words: which module uses which chunk matters, and by more than the training seed does. The five maps' mean losses run from 1.0011 to 1.0208, a standard deviation across maps of 0.0087, where the three training seeds of one map have a standard deviation of 0.0015 on average (0.0006 to 0.0029). The hypothesis stays open by its own rule, because two of the four drawn maps are not separated from the mod map: two are worse at every seed and two are level, each below it at seed 1 alone. The two that lose each put three pairs of neighbouring modules on one chunk and the two that are level put two; the mod map puts none. Four draws do not separate that from how unevenly a map loads its chunks, or from which modules share with the first and the last, or from the learning rate, which was chosen for the mod map and used for every map. What the rounds do not show: more than four draws, another bank size, more modules over the same bank (an open hypothesis in the ledger), or a map chosen on purpose."
+  },
+  {
+   "hypothesis": "picking-lock-in",
+   "lower": {"shared": "both", "steps": 32000},
+   "higher": {"shared": "both", "pick": "frozen", "steps": 32000},
+   "budget_gpu_hours": 12.0,
+   "estimated_gpu_hours": 7.6,
+   "why": "picking-lock-in (priority 3) is the highest-priority open hypothesis with an unfinished comparison that fits 12 GPU-hours; the cheapest is 32000/both against 32000/both-frozen-picks, estimated at 7.6 GPU-hours.",
+   "runs": [
+    "runs/32000/both-frozen-picks-lr0.001-s0.json",
+    "runs/32000/both-frozen-picks-lr0.002-s0.json",
+    "runs/32000/both-frozen-picks-lr0.002-s1.json",
+    "runs/32000/both-frozen-picks-lr0.002-s2.json",
+    "runs/8000/both-frozen-picks-lr0.0005-s0.json",
+    "runs/8000/both-frozen-picks-lr0.001-s0.json",
+    "runs/8000/both-frozen-picks-lr0.002-s0.json"
+   ],
+   "rows": ["32000/both-frozen-picks", "8000/both-frozen-picks"],
+   "gpu_hours": 4.3,
+   "statuses": {"picking-lock-in": ["open", "supported"]},
+   "differences": [-0.0472, -0.0627, -0.0547],
+   "reading": "32000/both reached 1.0134 nats per byte with 3,360,512 stored weights at rate 0.002; 32000/both-frozen-picks reached 1.0683 with 3,394,952 at rate 0.002. Lower minus higher by seed: -0.0472, -0.0627, -0.0547. picking-lock-in went from open to supported.",
+   "note": "In plain words: after a quarter of training each module was fixed, for the rest of the run, to the chunk its router picked most often, and the result is far worse than the mod map: 1.0683 against 1.0134, above it at every seed by 0.047 to 0.063. It is also worse than letting the router go on picking per token, which reaches 1.0321, by 0.036. At every seed the frozen maps leave chunks out: the attention bank ends on two of its four chunks and the feed-forward bank on three, with four to six modules in a row on one feed-forward chunk. The model keeps storing chunks no module uses and ends above the mod map with two chunks, which stores about half the weights and reaches 1.0583. The logged loss rises from 1.20 to 1.32 across the freeze. The status is supported by the hypothesis's own rule, that the frozen model loses to the mod map; the round does not show that the routed model loses because it is locked into that map, since the routed model beats the frozen one and its most common picks at the end of training differ from the frozen map in five of six banks. What the round does not show: a freeze at another point of training, a model trained from the start on one of these collapsed maps, which would separate the layout from the cost of the switch, or whether router and chunks chase each other, which is the next comparison and needs the model whose router is stopped."
   }
  ],
  "cells": [
@@ -741,6 +765,43 @@
      "seed": 2,
      "loss": 1.0014,
      "seconds": 3614
+    }
+   ]
+  },
+  {
+   "cell": {"shared": "both", "pick": "frozen", "steps": 32000},
+   "stored_weights": 3394952,
+   "rate": 0.002,
+   "loss": 1.0683,
+   "seed_sd": 0.0085,
+   "runs": [
+    {
+     "file": "runs/32000/both-frozen-picks-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.0643,
+     "seconds": 3362
+    },
+    {
+     "file": "runs/32000/both-frozen-picks-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.0594,
+     "seconds": 3116
+    },
+    {
+     "file": "runs/32000/both-frozen-picks-lr0.002-s1.json",
+     "rate": 0.002,
+     "seed": 1,
+     "loss": 1.0763,
+     "seconds": 3459
+    },
+    {
+     "file": "runs/32000/both-frozen-picks-lr0.002-s2.json",
+     "rate": 0.002,
+     "seed": 2,
+     "loss": 1.0692,
+     "seconds": 3198
     }
    ]
   },
@@ -1498,6 +1559,33 @@
     {"file": "runs/8000/both-c8-lr0.001-s0.json", "rate": 0.001, "seed": 0, "loss": 1.0788, "seconds": 533},
     {"file": "runs/8000/both-c8-lr0.001-s1.json", "rate": 0.001, "seed": 1, "loss": 1.0743, "seconds": 550},
     {"file": "runs/8000/both-c8-lr0.001-s2.json", "rate": 0.001, "seed": 2, "loss": 1.0773, "seconds": 489}
+   ]
+  },
+  {
+   "cell": {"shared": "both", "pick": "frozen", "steps": 8000},
+   "stored_weights": 3394952,
+   "runs": [
+    {
+     "file": "runs/8000/both-frozen-picks-lr0.0005-s0.json",
+     "rate": 0.0005,
+     "seed": 0,
+     "loss": 1.2182,
+     "seconds": 753
+    },
+    {
+     "file": "runs/8000/both-frozen-picks-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.169,
+     "seconds": 760
+    },
+    {
+     "file": "runs/8000/both-frozen-picks-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.1475,
+     "seconds": 749
+    }
    ]
   },
   {

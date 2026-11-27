@@ -92,14 +92,17 @@ choosing a chunk per token costs loss against a plain model and against fixed sh
 same weights, and fixed sharing is the only arrangement here that beats a plain model of
 equal storage.
 
-The loop described below has since run eight rounds at the long budget; the cells they
+The loop described below has since run nine rounds at the long budget; the cells they
 tried are the stars on the chart. The fourth is the equal-compute pair above. Rounds 5
 to 8 trained four fixed maps drawn at random beside the mod map, in the modern architecture
 at equal stored weights: two are worse than the mod map at every seed, by 0.020 and 0.011,
 and two are level with it (0.002 above and 0.0001 below on average), so at the mod map's
 learning rate which module uses which chunk matters, by more than the training seed does,
 and no drawn map is separated from the mod map on the better side (the section "Fixed maps"
-has each map). A low-rank correction per module on one shared chunk does
+has each map). Round 9 froze each module to its router's most common pick after a
+quarter of training: 1.0683 against the mod map's 1.0134 and the routed model's 1.0321.
+The frozen maps use only two or three of the four chunks (the section "Freezing the
+picks"). A low-rank correction per module on one shared chunk does
 not beat a second chunk at equal stored weights. Rounds 2 and 3 took the fixed map, eight
 modules reusing four chunks with no router, into a modern transformer (rotary positions,
 root-mean-square norms, a gated feed-forward) and set it against two plain models. The
@@ -533,6 +536,38 @@ All three routed models stay 0.019 to 0.033 above the fixed map at the long budg
 something these two arms leave in place: every module choosing among all four chunks token by
 token, trained through a hard pick. The longer budget and tuned rates closed three fifths of
 the distance (0.045 to 0.019) without either change to the router.
+
+### Freezing the picks
+
+Round 9 of the loop tested one explanation of the distance: that routers lock in early
+picks which make a poor map. `both-frozen-picks` trains as `both-routed` for a quarter of
+the run, then fixes every module to the chunk its router picked most often on training text
+and trains on with no router. It reaches 1.0683, against 1.0134 for the mod map over the
+same banks and 1.0321 for the model that keeps picking per token: 0.055 above the mod map,
+at every seed (0.047 to 0.063), and 0.036 above the routed model. The hypothesis
+`picking-lock-in` is supported by its rule, which asks only that the frozen model lose to
+the mod map.
+
+The run files show what the frozen maps are. Numbering chunks as stored, the three seeds
+froze the feed-forward bank to 3 2 1 1 2 2 2 2, 1 3 0 0 0 0 0 0 and 3 2 0 0 0 0 0 0, and
+the attention bank to 3 1 1 3 3 3 3 1, 1 1 2 1 1 1 2 2 and 0 0 0 0 2 2 0 2. Every one
+leaves chunks unused, attention two of its four and feed-forward one, and puts four to six
+modules in a row on one feed-forward chunk. The frozen model still stores all four chunks
+of each kind, 3,394,952 weights, and ends above the mod map with two chunks, which stores
+1,783,040 and reaches 1.0583. The logged validation loss rises from 1.20 to 1.32 across
+the freeze and ends 0.03 to 0.04 above the routed model's.
+
+What this does and does not say. The map a router's common picks make after a quarter of
+training is a poor one to commit to. It does not show that the routed model loses because
+it is locked into that map: the routed model beats its frozen counterpart by 0.036, and in
+five of the six banks the routed runs' most common picks at the end of training are not
+the map frozen at the quarter point. Nor does it separate the layout from the switch: no
+model was trained from the start on one of these collapsed maps, so some of the 0.055 may
+be the cost of changing the model a quarter of the way in. Whether the routed model's
+remaining 0.019 over the mod map is the router and the chunks chasing each other
+(`picking-chase`) or a worse function even under a router that no longer moves
+(`picking-worse-function`) is not settled: both need the model whose router is stopped
+after a quarter of training, which has no long run yet.
 
 ## Reuse without a router, by number of chunks
 

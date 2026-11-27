@@ -100,14 +100,17 @@ choosing a chunk per token costs loss against a plain model and against fixed sh
 same weights, and fixed sharing is the only arrangement here that beats a plain model of
 equal storage.
 
-The loop described below has since run eight rounds at the long budget; the cells they
+The loop described below has since run nine rounds at the long budget; the cells they
 tried are the stars on the chart. The fourth is the equal-compute pair above. Rounds 5
 to 8 trained four fixed maps drawn at random beside the mod map, in the modern architecture
 at equal stored weights: two are worse than the mod map at every seed, by 0.020 and 0.011,
 and two are level with it (0.002 above and 0.0001 below on average), so at the mod map's
 learning rate which module uses which chunk matters, by more than the training seed does,
 and no drawn map is separated from the mod map on the better side (the section "Fixed maps"
-has each map). A low-rank correction per module on one shared chunk does
+has each map). Round 9 froze each module to its router's most common pick after a
+quarter of training: 1.0683 against the mod map's 1.0134 and the routed model's 1.0321.
+The frozen maps use only two or three of the four chunks (the section "Freezing the
+picks"). A low-rank correction per module on one shared chunk does
 not beat a second chunk at equal stored weights. Rounds 2 and 3 took the fixed map, eight
 modules reusing four chunks with no router, into a modern transformer (rotary positions,
 root-mean-square norms, a gated feed-forward) and set it against two plain models. The
@@ -231,7 +234,7 @@ hand in the ledger; statuses are computed.
 | 2 | reuse-survives-the-modern-architecture | The gain from reuse survives the modern architecture: with rotary positions, root-mean-square norms and a gated feed-forward, eight modules reusing four chunks still beat the plain model of four modules. | `32000/both-modern` below `32000/plain-l4-modern`: -0.0425, -0.0422, -0.0326 | **supported** |
 | 2 | sharing-beats-a-narrowed-modern-model | In the modern architecture the shared model beats a plain model that keeps all eight modules and stores no fewer weights: eight modules reusing four chunks through the fixed map reach a lower loss than the plain model narrowed to width 184, the width nearest to the shared model's stored weights among multiples of 8, which stores 70,088 more weights (2.1%). | `32000/both-modern` below `32000/plain-w184-modern`: -0.0115, -0.0097, -0.0152 | **supported** |
 | 2 | the-mod-map-beats-a-map-drawn-at-random | Which module uses which chunk matters: in the modern architecture the mod map, where every chunk serves two modules four apart, reaches a lower loss than a fixed map drawn at random over the same four chunks. A drawn map uses every chunk, so it stores exactly the mod map's weights, and it trains at the mod map's learning rate. One comparison per drawn map: supported means every drawn map is worse, refuted that every one is better, and open that the maps do not all fall on one side by more than the spread of training seeds. | `32000/both-modern` below `32000/both-drawn-d1-modern`: -0.0210, -0.0175, -0.0203<br>`32000/both-modern` below `32000/both-drawn-d2-modern`: -0.0135, -0.0099, -0.0104<br>`32000/both-modern` below `32000/both-drawn-d3-modern`: -0.0051, +0.0030, -0.0033<br>`32000/both-modern` below `32000/both-drawn-d4-modern`: -0.0015, +0.0030, -0.0011 | **open** |
-| 3 | picking-lock-in | A per-input pick loses to the fixed map because routers lock in early, near-random picks: with each module frozen to its router's most common pick after a quarter of training, the model still loses to the fixed map of module i to chunk i mod N. | `32000/both` below `32000/both-frozen-picks`: not run | **open** |
+| 3 | picking-lock-in | A per-input pick loses to the fixed map because routers lock in early, near-random picks: with each module frozen to its router's most common pick after a quarter of training, the model still loses to the fixed map of module i to chunk i mod N. | `32000/both` below `32000/both-frozen-picks`: -0.0472, -0.0627, -0.0547 | **supported** |
 | 3 | picking-chase | A per-input pick loses because chunks and router chase each other: holding the router's weights still after a quarter of training beats letting it learn throughout. | `32000/both-stopped-router` below `32000/both-routed`: not run | **open** |
 | 3 | picking-worse-function | A per-input pick loses because mixing chunks token by token is a worse function than one chunk per module, even under a router that no longer moves: frozen picks beat a stopped router. | `32000/both-frozen-picks` below `32000/both-stopped-router`: not run | **open** |
 | 4 | own-ends-beat-the-all-shared-map | At equal stored weights, giving the first and the last module chunks of their own and looping the modules between them beats sharing every chunk alike: with four chunks for eight modules in the modern architecture, the map 0 1 2 1 2 1 2 3 reaches a lower loss than the mod map 0 1 2 3 0 1 2 3, which stores the same weights. | `32000/both-ends-modern` below `32000/both-modern`: not run | **open** |
@@ -354,6 +357,16 @@ the-mod-map-beats-a-map-drawn-at-random (priority 2) is the highest-priority ope
 3 runs, 3 GPU-hours of training against an estimate of 2.8; ledger rows written: `32000/both-drawn-d4-modern`.
 
 A drawn map is fixed for the whole run and the same at every training seed: each of the eight modules' chunks is drawn uniformly from a generator seeded with the draw's number alone, apart from the training seed, and a draw that leaves a chunk unused is thrown away whole and drawn again, so every map uses all four chunks and stores exactly the mod map's 3,289,936 weights; an unused chunk never has to be counted. It trains at the mod map's learning rate, 0.002, with no sweep of its own. Draw 4 is the map 0 1 2 3 1 1 1 0, numbering chunks in order of first use; it is level with the mod map: 1.0011 against 1.0012, with one seed of three below. With this round all four drawn maps have run, so five distinct maps have been trained, the mod map among them. In plain words: which module uses which chunk matters, and by more than the training seed does. The five maps' mean losses run from 1.0011 to 1.0208, a standard deviation across maps of 0.0087, where the three training seeds of one map have a standard deviation of 0.0015 on average (0.0006 to 0.0029). The hypothesis stays open by its own rule, because two of the four drawn maps are not separated from the mod map: two are worse at every seed and two are level, each below it at seed 1 alone. The two that lose each put three pairs of neighbouring modules on one chunk and the two that are level put two; the mod map puts none. Four draws do not separate that from how unevenly a map loads its chunks, or from which modules share with the first and the last, or from the learning rate, which was chosen for the mod map and used for every map. What the rounds do not show: more than four draws, another bank size, more modules over the same bank (an open hypothesis in the ledger), or a map chosen on purpose.
+
+### Round 9: picking-lock-in
+
+picking-lock-in (priority 3) is the highest-priority open hypothesis with an unfinished comparison that fits 12 GPU-hours; the cheapest is 32000/both against 32000/both-frozen-picks, estimated at 7.6 GPU-hours.
+
+32000/both reached 1.0134 nats per byte with 3,360,512 stored weights at rate 0.002; 32000/both-frozen-picks reached 1.0683 with 3,394,952 at rate 0.002. Lower minus higher by seed: -0.0472, -0.0627, -0.0547. picking-lock-in went from open to supported.
+
+7 runs, 4.3 GPU-hours of training against an estimate of 7.6; ledger rows written: `32000/both-frozen-picks`, `8000/both-frozen-picks`.
+
+In plain words: after a quarter of training each module was fixed, for the rest of the run, to the chunk its router picked most often, and the result is far worse than the mod map: 1.0683 against 1.0134, above it at every seed by 0.047 to 0.063. It is also worse than letting the router go on picking per token, which reaches 1.0321, by 0.036. At every seed the frozen maps leave chunks out: the attention bank ends on two of its four chunks and the feed-forward bank on three, with four to six modules in a row on one feed-forward chunk. The model keeps storing chunks no module uses and ends above the mod map with two chunks, which stores about half the weights and reaches 1.0583. The logged loss rises from 1.20 to 1.32 across the freeze. The status is supported by the hypothesis's own rule, that the frozen model loses to the mod map; the round does not show that the routed model loses because it is locked into that map, since the routed model beats the frozen one and its most common picks at the end of training differ from the frozen map in five of six banks. What the round does not show: a freeze at another point of training, a model trained from the start on one of these collapsed maps, which would separate the layout from the cost of the switch, or whether router and chunks chase each other, which is the next comparison and needs the model whose router is stopped.
 
 ### The modern cells beside the classic architecture
 
@@ -483,6 +496,7 @@ where three seeds share a rate.
 | `32000/both-drawn-d2-modern` | both | drawn | 2 | 4 | 0 | 8 | 256 | 32000 | modern | 3,289,936 | 0.002 | 1.0125 | 0.0018 | 3 |
 | `32000/both-drawn-d3-modern` | both | drawn | 3 | 4 | 0 | 8 | 256 | 32000 | modern | 3,289,936 | 0.002 | 1.0030 | 0.0014 | 3 |
 | `32000/both-drawn-d4-modern` | both | drawn | 4 | 4 | 0 | 8 | 256 | 32000 | modern | 3,289,936 | 0.002 | 1.0011 | 0.0006 | 3 |
+| `32000/both-frozen-picks` | both | frozen | 0 | 4 | 0 | 8 | 256 | 32000 | classic | 3,394,952 | 0.002 | 1.0683 | 0.0085 | 4 |
 | `32000/both` | both | fixed | 0 | 4 | 0 | 8 | 256 | 32000 | classic | 3,360,512 | 0.002 | 1.0134 | 0.0012 | 4 |
 | `32000/both-modern` | both | fixed | 0 | 4 | 0 | 8 | 256 | 32000 | modern | 3,289,936 | 0.002 | 1.0012 | 0.0029 | 4 |
 | `32000/both-routed-argmax` | both | argmax | 0 | 4 | 0 | 8 | 256 | 32000 | classic | 3,394,952 | 0.002 | 1.0459 | 0.0021 | 5 |
@@ -507,6 +521,7 @@ where three seeds share a rate.
 | `8000/both-c1-r24` | both | fixed | 0 | 1 | 24 | 8 | 256 | 8000 | classic | 1,780,736 |  |  |  | 3 |
 | `8000/both-c2` | both | fixed | 0 | 2 | 0 | 8 | 256 | 8000 | classic | 1,783,040 | 0.001 | 1.1384 | 0.0073 | 5 |
 | `8000/both-c8` | both | fixed | 0 | 8 | 0 | 8 | 256 | 8000 | classic | 6,515,456 | 0.001 | 1.0768 | 0.0023 | 3 |
+| `8000/both-frozen-picks` | both | frozen | 0 | 4 | 0 | 8 | 256 | 8000 | classic | 3,394,952 |  |  |  | 3 |
 | `8000/both` | both | fixed | 0 | 4 | 0 | 8 | 256 | 8000 | classic | 3,360,512 | 0.001 | 1.1004 | 0.0049 | 5 |
 | `8000/both-modern` | both | fixed | 0 | 4 | 0 | 8 | 256 | 8000 | modern | 3,289,936 |  |  |  | 3 |
 | `8000/both-routed-argmax` | both | argmax | 0 | 4 | 0 | 8 | 256 | 8000 | classic | 3,394,952 | 0.001 | 1.1581 | 0.0024 | 5 |
@@ -825,6 +840,38 @@ something these two arms leave in place: every module choosing among all four ch
 token, trained through a hard pick. The longer budget and tuned rates closed three fifths of
 the distance (0.045 to 0.019) without either change to the router.
 
+### Freezing the picks
+
+Round 9 of the loop tested one explanation of the distance: that routers lock in early
+picks which make a poor map. `both-frozen-picks` trains as `both-routed` for a quarter of
+the run, then fixes every module to the chunk its router picked most often on training text
+and trains on with no router. It reaches 1.0683, against 1.0134 for the mod map over the
+same banks and 1.0321 for the model that keeps picking per token: 0.055 above the mod map,
+at every seed (0.047 to 0.063), and 0.036 above the routed model. The hypothesis
+`picking-lock-in` is supported by its rule, which asks only that the frozen model lose to
+the mod map.
+
+The run files show what the frozen maps are. Numbering chunks as stored, the three seeds
+froze the feed-forward bank to 3 2 1 1 2 2 2 2, 1 3 0 0 0 0 0 0 and 3 2 0 0 0 0 0 0, and
+the attention bank to 3 1 1 3 3 3 3 1, 1 1 2 1 1 1 2 2 and 0 0 0 0 2 2 0 2. Every one
+leaves chunks unused, attention two of its four and feed-forward one, and puts four to six
+modules in a row on one feed-forward chunk. The frozen model still stores all four chunks
+of each kind, 3,394,952 weights, and ends above the mod map with two chunks, which stores
+1,783,040 and reaches 1.0583. The logged validation loss rises from 1.20 to 1.32 across
+the freeze and ends 0.03 to 0.04 above the routed model's.
+
+What this does and does not say. The map a router's common picks make after a quarter of
+training is a poor one to commit to. It does not show that the routed model loses because
+it is locked into that map: the routed model beats its frozen counterpart by 0.036, and in
+five of the six banks the routed runs' most common picks at the end of training are not
+the map frozen at the quarter point. Nor does it separate the layout from the switch: no
+model was trained from the start on one of these collapsed maps, so some of the 0.055 may
+be the cost of changing the model a quarter of the way in. Whether the routed model's
+remaining 0.019 over the mod map is the router and the chunks chasing each other
+(`picking-chase`) or a worse function even under a router that no longer moves
+(`picking-worse-function`) is not settled: both need the model whose router is stopped
+after a quarter of training, which has no long run yet.
+
 ## Reuse without a router, by number of chunks
 
 The fixed map at 4 chunks is cycle sharing in the sense of Takase and Kiyono (2021, "Lessons
@@ -1061,6 +1108,10 @@ Both experiments and the learning-rate sweep, from the run files.
 | both-drawn-d4-modern | 0 | 32,000 | 0.002 | 3,289,936 | 1.0004 | 3620 |
 | both-drawn-d4-modern | 1 | 32,000 | 0.002 | 3,289,936 | 1.0014 | 3580 |
 | both-drawn-d4-modern | 2 | 32,000 | 0.002 | 3,289,936 | 1.0014 | 3614 |
+| both-frozen-picks | 0 | 32,000 | 0.001 | 3,394,952 | 1.0643 | 3362 |
+| both-frozen-picks | 0 | 32,000 | 0.002 | 3,394,952 | 1.0594 | 3116 |
+| both-frozen-picks | 1 | 32,000 | 0.002 | 3,394,952 | 1.0763 | 3459 |
+| both-frozen-picks | 2 | 32,000 | 0.002 | 3,394,952 | 1.0692 | 3198 |
 | both | 0 | 32,000 | 0.001 | 3,360,512 | 1.0167 | 1868 |
 | both | 0 | 32,000 | 0.002 | 3,360,512 | 1.0122 | 1852 |
 | both | 1 | 32,000 | 0.002 | 3,360,512 | 1.0136 | 1743 |
@@ -1172,6 +1223,9 @@ Both experiments and the learning-rate sweep, from the run files.
 | both-c8 | 0 | 8,000 | 0.001 | 6,515,456 | 1.0788 | 533 |
 | both-c8 | 1 | 8,000 | 0.001 | 6,515,456 | 1.0743 | 550 |
 | both-c8 | 2 | 8,000 | 0.001 | 6,515,456 | 1.0773 | 489 |
+| both-frozen-picks | 0 | 8,000 | 0.0005 | 3,394,952 | 1.2182 | 753 |
+| both-frozen-picks | 0 | 8,000 | 0.001 | 3,394,952 | 1.1690 | 760 |
+| both-frozen-picks | 0 | 8,000 | 0.002 | 3,394,952 | 1.1475 | 749 |
 | both | 0 | 8,000 | 0.0005 | 3,360,512 | 1.1466 | 446 |
 | both | 0 | 8,000 | 0.001 | 3,360,512 | 1.0976 | 494 |
 | both | 1 | 8,000 | 0.001 | 3,360,512 | 1.0975 | 501 |

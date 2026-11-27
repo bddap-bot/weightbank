@@ -51,6 +51,11 @@ side. Across the five maps the loss has a standard deviation of 0.009, against 0
 average across the training seeds of one map. Every map trained at the mod map's learning
 rate.
 
+Round nine froze each module of the routed model to the chunk its router picked most often
+after a quarter of training. That reaches 1.068, against 1.013 for the mod map and 1.032 for
+the model that keeps picking per token. The maps it froze to use only two or three of the
+four chunks.
+
 The full write-up, with every run, is in [report.md](report.md).
 
 ## A second track: fitting a bank to a trained model
