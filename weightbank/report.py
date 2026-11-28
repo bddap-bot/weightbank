@@ -1056,7 +1056,7 @@ def chart(budget: Budget, ledger: Ledger) -> None:
         0.5,
         0.008,
         "The fixed map at 4 chunks and the three points with both kinds picked per token store the same weights to within 1.2% and are drawn side by side.\n"
-        "A star is drawn just right of its stored weights; in the enlarged panel the small stars of several draws are spread out to its left, in the order the legend names them.\n"
+        "A star is drawn just right of its stored weights; in the enlarged panel the small stars of several draws are spread out to its left, the first the legend names nearest.\n"
         f"Lines and every point whose label names no architecture are the {architecture.words[architecture.default]};"
         " stars that name another architecture are compared with one another.",
         color=MUTED,

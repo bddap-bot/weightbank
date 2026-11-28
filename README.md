@@ -56,6 +56,14 @@ after a quarter of training. That reaches 1.068, against 1.013 for the mod map a
 the model that keeps picking per token. The maps it froze to use only two or three of the
 four chunks.
 
+Round ten stopped the router after a quarter of training and let the modules go on picking
+per token: 1.034, within 0.002 of the model whose router keeps learning. So what the router
+learns late makes no measurable difference to the pick's 0.019 over the mod map, and
+picking per token beats committing to the routers' own map by 0.036. Whether the 0.019 comes
+from how the routers assign modules to chunks or from picking per token as such is open,
+with two hypotheses in the ledger. Round eleven tried a fixed map whose first and last modules have chunks of their
+own: 1.016 against the mod map's 1.001 at the same stored weights.
+
 The full write-up, with every run, is in [report.md](report.md).
 
 ## A second track: fitting a bank to a trained model

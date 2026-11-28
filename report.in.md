@@ -92,7 +92,7 @@ choosing a chunk per token costs loss against a plain model and against fixed sh
 same weights, and fixed sharing is the only arrangement here that beats a plain model of
 equal storage.
 
-The loop described below has since run nine rounds at the long budget; the cells they
+The loop described below has since run eleven rounds at the long budget; the cells they
 tried are the stars on the chart. The fourth is the equal-compute pair above. Rounds 5
 to 8 trained four fixed maps drawn at random beside the mod map, in the modern architecture
 at equal stored weights: two are worse than the mod map at every seed, by 0.020 and 0.011,
@@ -102,7 +102,15 @@ and no drawn map is separated from the mod map on the better side (the section "
 has each map). Round 9 froze each module to its router's most common pick after a
 quarter of training: 1.0683 against the mod map's 1.0134 and the routed model's 1.0321.
 The frozen maps use only two or three of the four chunks (the section "Freezing the
-picks"). A low-rank correction per module on one shared chunk does
+picks"). Round 10 stopped the router after a quarter of training instead and let every
+module go on picking per token: 1.0336, 0.0015 above the routed model and inside its own
+seed spread, so what the router learns after the first quarter makes no measurable
+difference to the pick's 0.019 over the mod map. Of the three rival explanations one is
+supported by its rule, one refuted and one left open with its comparison finished (the
+section "Stopping the router"). Round 11 gave the
+first and the last module chunks of their own and cycled the six modules between them
+through the other two chunks, at the same stored weights: 1.0157 against the mod map's
+1.0012, worse at every seed. A low-rank correction per module on one shared chunk does
 not beat a second chunk at equal stored weights. Rounds 2 and 3 took the fixed map, eight
 modules reusing four chunks with no router, into a modern transformer (rotary positions,
 root-mean-square norms, a gated feed-forward) and set it against two plain models. The
@@ -166,11 +174,11 @@ Points are means of three seeds. A star is a cell with three seeds at this budge
 those of the first two experiments, tried by the loop described next; it is drawn just
 right of its stored weights so that it hides no point of equal size. The two lines and the
 other points are the classic architecture; the four small stars are the maps drawn at
-random, set just left of the shared modern model they are compared with, and the four large stars of the modern architecture are
+random, set just left of the shared modern model they are compared with, and the large stars of the modern architecture are
 read against one another, not against the lines: at about 3.3 million stored weights the
 shared model lowest, the plain model narrowed to width 184 above it and the plain model of
-four modules highest, and at 6.4 million the plain model of eight modules at full width,
-below all three. The legend label of every point and
+four modules highest, with the map with own ends just above the narrowed model, and at 6.4
+million the plain model of eight modules at full width, below them all. The legend label of every point and
 star is spelled from the plain words the ledger gives each axis value: what the cell
 shares, the values it has off the default, and for a cell that shares weights also how a
 module gets its chunk and how many chunks a bank holds. A line's label opens with the same
@@ -319,9 +327,10 @@ thing that differs.
 
 {{map-spread}}
 
-At this learning rate the map matters, and by more than the training seed does: the five
-maps' means, the mod map's among them, have a standard deviation of 0.0087, against 0.0015
-on average across the three seeds of one map. The hypothesis that the mod map beats a map
+At this learning rate the map matters, and by more than the training seed does: the six
+maps' means, the mod map's among them, have a standard deviation of 0.0084, against 0.0016
+on average across the three seeds of one map (0.0087 and 0.0015 over the mod map and the
+four drawn maps alone). The hypothesis that the mod map beats a map
 drawn at random stays open by its own rule, because two of the four drawn maps are not
 separated from it. Draws 1 and 2 are worse than the mod map at every seed, by 0.020 and
 0.011. Draws 3 and 4 are level with it, 0.002 above and 0.0001 below on average; each is
@@ -333,7 +342,14 @@ modules on one chunk and is level) or which modules share with the first and the
 do they separate the map from the learning rate: every map trained at the rate chosen for
 the mod map, and a map that loses might lose less at a rate of its own. Draw 4 is the one
 draw whose first attempt left a chunk unused and was drawn again. Four draws are a small
-sample of the 1,701 distinct ways eight modules can use all of four chunks. Sixteen modules
+sample of the 1,701 distinct ways eight modules can use all of four chunks. The map with own ends, 0 1 2 1 2 1 2 3, is worse than the mod map at every seed, by
+0.018, 0.012 and 0.013: 1.0157 against 1.0012, so `own-ends-beat-the-all-shared-map` is
+refuted. At equal stored weights own ends leave two chunks for the six modules between
+them, each used three times, and no neighbouring modules share a chunk, so what it loses
+by is not the neighbour count the drawn maps suggested. This is not a test of the vendor's
+model named in the reading, whose own ends are layers added around a loop at a far larger
+size; it says only that in this model, with the bank held at four chunks, taking two of
+them for the ends costs more than it returns. Sixteen modules
 over the same four chunks, where a drawn map can differ from the mod map in more places, is
 in the ledger as an open hypothesis (`the-map-matters-more-with-more-modules`) and has no
 runs.
@@ -563,11 +579,47 @@ it is locked into that map: the routed model beats its frozen counterpart by 0.0
 five of the six banks the routed runs' most common picks at the end of training are not
 the map frozen at the quarter point. Nor does it separate the layout from the switch: no
 model was trained from the start on one of these collapsed maps, so some of the 0.055 may
-be the cost of changing the model a quarter of the way in. Whether the routed model's
-remaining 0.019 over the mod map is the router and the chunks chasing each other
-(`picking-chase`) or a worse function even under a router that no longer moves
-(`picking-worse-function`) is not settled: both need the model whose router is stopped
-after a quarter of training, which has no long run yet.
+be the cost of changing the model a quarter of the way in.
+
+### Stopping the router, and what the three picking hypotheses show together
+
+Round 10 trained `both-stopped-router`: routed as before, but after a quarter of training
+the routers' weights are held still while every module goes on picking per token. It
+reaches 1.0336, against 1.0321 for the model whose router learns throughout: 0.0015 above
+it on average (0.0004, 0.0030 and 0.0011 at the three seeds), inside the stopped model's
+seed standard deviation of 0.0026. That finishes the comparisons of all three hypotheses:
+
+- `picking-lock-in`, supported by its rule: picks frozen to one chunk per module lose to the
+  mod map, by 0.055.
+- `picking-chase`, open: its comparison is finished and does not separate the two. With the
+  router held still for the last three quarters of training the model ends a little higher
+  at every seed, by less than its own seed spread. If the per-token pick lost because the router and the chunks kept
+  chasing each other, stopping the router should have helped; the numbers lean against that
+  explanation without refuting it by the rule.
+- `picking-worse-function`, refuted: it claimed that under a router that no longer moves,
+  one chunk per module (the frozen picks) beats mixing chunks token by token (the stopped
+  router). The frozen model is worse at every seed, by 0.027 to 0.040. Under the routers
+  these models learn, picking per token is the better use of them, not the worse.
+
+In plain words. The per-token pick ends 0.019 above the mod map. What the router learns
+after the first quarter of training makes no measurable difference to that: a router
+stopped there ends within 0.002 of one that keeps learning, while the chunks go on
+training under it. The distance is not sampling noise or the router's form either (the two
+other routers above). The frozen picks show one more thing, and suggest a reading of it.
+What they show: each module's most common pick falls on two or three of the four chunks,
+with long runs of modules on one chunk, where the mod map spreads the modules evenly, and
+a model committed to those picks ends 0.055 above the mod map, while the routed model, by
+going on picking per token, ends 0.036 below the frozen one. No chunk goes unused in the
+routed model: pooled over modules its feed-forward picks are close to even, and its
+attention picks are not (one chunk gets under a tenth of them and another nearly half; the
+usage tables under "How much picks vary by input"). The reading this suggests, and no run
+tests: the routers arrive at a poor assignment of modules to chunks, and the per-token pick
+pays for it. What stays open is whether the 0.019 is the price of that assignment or of
+mixing chunks token by token as such. No run here has a per-token pick laid over a good assignment. Two hypotheses
+in the ledger ask for one, and neither has a cell yet: a pick that starts as the mod map
+and is freed once the chunks have specialised
+(`a-pick-freed-from-the-fixed-map-beats-a-pick-learned-from-the-start`), and a pick held to
+lean on the bank evenly (`a-pick-held-to-an-even-assignment-closes-the-distance`).
 
 ## Reuse without a router, by number of chunks
 

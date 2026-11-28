@@ -197,31 +197,34 @@
    "settle": [
     {
      "lower": {"shared": "both", "pick": "stopped", "steps": 32000},
-     "higher": {"shared": "both", "pick": "routed", "steps": 32000}
+     "higher": {"shared": "both", "pick": "routed", "steps": 32000},
+     "differences": [0.0004, 0.003, 0.0011]
     }
    ]
   },
   {
    "id": "picking-worse-function",
    "priority": 3,
-   "status": "open",
+   "status": "refuted",
    "statement": "A per-input pick loses because mixing chunks token by token is a worse function than one chunk per module, even under a router that no longer moves: frozen picks beat a stopped router.",
    "settle": [
     {
      "lower": {"shared": "both", "pick": "frozen", "steps": 32000},
-     "higher": {"shared": "both", "pick": "stopped", "steps": 32000}
+     "higher": {"shared": "both", "pick": "stopped", "steps": 32000},
+     "differences": [0.0274, 0.0397, 0.0369]
     }
    ]
   },
   {
    "id": "own-ends-beat-the-all-shared-map",
    "priority": 4,
-   "status": "open",
+   "status": "refuted",
    "statement": "At equal stored weights, giving the first and the last module chunks of their own and looping the modules between them beats sharing every chunk alike: with four chunks for eight modules in the modern architecture, the map 0 1 2 1 2 1 2 3 reaches a lower loss than the mod map 0 1 2 3 0 1 2 3, which stores the same weights.",
    "settle": [
     {
      "lower": {"shared": "both", "pick": "ends", "steps": 32000, "architecture": "modern"},
-     "higher": {"shared": "both", "steps": 32000, "architecture": "modern"}
+     "higher": {"shared": "both", "steps": 32000, "architecture": "modern"},
+     "differences": [0.0178, 0.0124, 0.0132]
     }
    ]
   },
@@ -229,7 +232,14 @@
    "id": "a-pick-freed-from-the-fixed-map-beats-a-pick-learned-from-the-start",
    "priority": 4,
    "status": "open",
-   "statement": "A per-token pick that starts as the fixed map and is freed only once the chunks have specialised beats a pick learned from the first step: every module computes through the mod map for the first part of training, then a router initialised to reproduce that map takes over. A chunk has to be something stable before choosing among chunks can mean anything. No cell expresses this yet: it needs a pick value that hands over from the map to a router. Its cell would train at the routed model's pace, about 8 GPU-hours under the rate protocol.",
+   "statement": "A per-token pick that starts as the fixed map and is freed only once the chunks have specialised beats a pick learned from the first step: every module computes through the mod map for the first part of training, then a router initialised to reproduce that map takes over. A chunk has to be something stable before choosing among chunks can mean anything. No cell expresses this yet: it needs a pick value that hands over from the map to a router. Its cell would train at the routed model's pace: the stopped router's cell was estimated at 7.6 GPU-hours under the rate protocol and took 9.4.",
+   "settle": []
+  },
+  {
+   "id": "a-pick-held-to-an-even-assignment-closes-the-distance",
+   "priority": 4,
+   "status": "open",
+   "statement": "A per-token pick loses to the mod map because its routers lean each module on too few chunks, not because mixing chunks token by token is worse as such: a router held so that the modules' most common picks spread over the bank as evenly as the mod map spreads them reaches the mod map's loss. No cell expresses this yet: it needs a pick value for a router with a term that keeps the assignment even. Its cell would train at the routed model's pace, about 9 GPU-hours under the rate protocol.",
    "settle": []
   },
   {
@@ -518,6 +528,49 @@
    "differences": [-0.0472, -0.0627, -0.0547],
    "reading": "32000/both reached 1.0134 nats per byte with 3,360,512 stored weights at rate 0.002; 32000/both-frozen-picks reached 1.0683 with 3,394,952 at rate 0.002. Lower minus higher by seed: -0.0472, -0.0627, -0.0547. picking-lock-in went from open to supported.",
    "note": "In plain words: after a quarter of training each module was fixed, for the rest of the run, to the chunk its router picked most often, and the result is far worse than the mod map: 1.0683 against 1.0134, above it at every seed by 0.047 to 0.063. It is also worse than letting the router go on picking per token, which reaches 1.0321, by 0.036. At every seed the frozen maps leave chunks out: the attention bank ends on two of its four chunks and the feed-forward bank on three, with four to six modules in a row on one feed-forward chunk. The model keeps storing chunks no module uses and ends above the mod map with two chunks, which stores about half the weights and reaches 1.0583. The logged loss rises from 1.20 to 1.32 across the freeze. The status is supported by the hypothesis's own rule, that the frozen model loses to the mod map; the round does not show that the routed model loses because it is locked into that map, since the routed model beats the frozen one and its most common picks at the end of training differ from the frozen map in five of six banks. What the round does not show: a freeze at another point of training, a model trained from the start on one of these collapsed maps, which would separate the layout from the cost of the switch, or whether router and chunks chase each other, which is the next comparison and needs the model whose router is stopped."
+  },
+  {
+   "hypothesis": "picking-chase",
+   "lower": {"shared": "both", "pick": "stopped", "steps": 32000},
+   "higher": {"shared": "both", "pick": "routed", "steps": 32000},
+   "budget_gpu_hours": 12.0,
+   "estimated_gpu_hours": 7.6,
+   "why": "picking-chase (priority 3) is the highest-priority open hypothesis with an unfinished comparison that fits 12 GPU-hours; the cheapest is 32000/both-stopped-router against 32000/both-routed, estimated at 7.6 GPU-hours.",
+   "runs": [
+    "runs/32000/both-stopped-router-lr0.001-s0.json",
+    "runs/32000/both-stopped-router-lr0.002-s0.json",
+    "runs/32000/both-stopped-router-lr0.002-s1.json",
+    "runs/32000/both-stopped-router-lr0.002-s2.json",
+    "runs/32000/both-stopped-router-lr0.004-s0.json",
+    "runs/8000/both-stopped-router-lr0.0005-s0.json",
+    "runs/8000/both-stopped-router-lr0.001-s0.json",
+    "runs/8000/both-stopped-router-lr0.002-s0.json"
+   ],
+   "rows": ["32000/both-stopped-router", "8000/both-stopped-router"],
+   "gpu_hours": 9.4,
+   "statuses": {"picking-worse-function": ["open", "refuted"]},
+   "differences": [0.0004, 0.003, 0.0011],
+   "reading": "32000/both-stopped-router reached 1.0336 nats per byte with 3,394,952 stored weights at rate 0.002; 32000/both-routed reached 1.0321 with 3,394,952 at rate 0.002. Lower minus higher by seed: +0.0004, +0.0030, +0.0011. picking-worse-function went from open to refuted.",
+   "note": "In plain words: the router's weights were held still after a quarter of training while every module went on picking per token, and the model ends where the one whose router keeps learning ends: 1.0336 against 1.0321, 0.0015 above it on average, higher at every seed and inside its own seed standard deviation of 0.0026. So picking-chase stays open by its rule with its comparison finished: stopping the router does not help, which leans against router and chunks chasing each other as the reason the pick loses, without refuting it. The same runs finish the comparison of picking-worse-function, which no round had to pick because both its cells now have runs: frozen picks are worse than the stopped router at every seed, by 0.0274, 0.0397 and 0.0369, so that hypothesis is refuted: under the routers these models learn, picking per token is the better use of them. Together with round 9: what the router learns after the first quarter makes no measurable difference to the pick's 0.019 over the mod map, and a model committed to the routers' most common picks does much worse than the mod map. What the rounds do not show is whether a per-token pick laid over a good assignment would match the mod map; two open hypotheses in the ledger ask for that and neither has a cell. The rate sweep ran three long rates (0.001, 0.002, 0.004) because 0.002, the best of the first two long runs, led the other by 0.0099, more than the margin of 0.005, which is one run and 1.6 GPU-hours beyond the estimate; of the rest of the 9.4 against 7.6, 0.1 is the three short runs, at 194 to 210 ms a step where the estimate priced 180, and the remainder is rounding."
+  },
+  {
+   "hypothesis": "own-ends-beat-the-all-shared-map",
+   "lower": {"shared": "both", "pick": "ends", "steps": 32000, "architecture": "modern"},
+   "higher": {"shared": "both", "steps": 32000, "architecture": "modern"},
+   "budget_gpu_hours": 12.0,
+   "estimated_gpu_hours": 2.9,
+   "why": "own-ends-beat-the-all-shared-map (priority 4) is the highest-priority open hypothesis with an unfinished comparison that fits 12 GPU-hours; the cheapest is 32000/both-ends-modern against 32000/both-modern, estimated at 2.9 GPU-hours.",
+   "runs": [
+    "runs/32000/both-ends-modern-lr0.002-s0.json",
+    "runs/32000/both-ends-modern-lr0.002-s1.json",
+    "runs/32000/both-ends-modern-lr0.002-s2.json"
+   ],
+   "rows": ["32000/both-ends-modern"],
+   "gpu_hours": 3.0,
+   "statuses": {"own-ends-beat-the-all-shared-map": ["open", "refuted"]},
+   "differences": [0.0178, 0.0124, 0.0132],
+   "reading": "32000/both-ends-modern reached 1.0157 nats per byte with 3,289,936 stored weights at rate 0.002; 32000/both-modern reached 1.0012 with 3,289,936 at rate 0.002. Lower minus higher by seed: +0.0178, +0.0124, +0.0132. own-ends-beat-the-all-shared-map went from open to refuted.",
+   "note": "In plain words: a fixed map that gives the first and the last module chunks of their own and cycles the six modules between them through the other two chunks, 0 1 2 1 2 1 2 3, is worse than the mod map at the same stored weights: 1.0157 against 1.0012, above it at every seed by 0.0178, 0.0124 and 0.0132. It trained at the mod map's learning rate with no sweep of its own. With the bank held at four chunks, own ends leave two chunks for six modules. What the round does not show: own ends added on top of a shared middle at more stored weights, a larger bank, or a rate chosen for this map."
   }
  ],
  "cells": [
@@ -769,6 +822,36 @@
    ]
   },
   {
+   "cell": {"shared": "both", "pick": "ends", "steps": 32000, "architecture": "modern"},
+   "stored_weights": 3289936,
+   "rate": 0.002,
+   "loss": 1.0157,
+   "seed_sd": 0.0019,
+   "runs": [
+    {
+     "file": "runs/32000/both-ends-modern-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.0167,
+     "seconds": 3430
+    },
+    {
+     "file": "runs/32000/both-ends-modern-lr0.002-s1.json",
+     "rate": 0.002,
+     "seed": 1,
+     "loss": 1.0168,
+     "seconds": 3544
+    },
+    {
+     "file": "runs/32000/both-ends-modern-lr0.002-s2.json",
+     "rate": 0.002,
+     "seed": 2,
+     "loss": 1.0135,
+     "seconds": 3664
+    }
+   ]
+  },
+  {
    "cell": {"shared": "both", "pick": "frozen", "steps": 32000},
    "stored_weights": 3394952,
    "rate": 0.002,
@@ -984,6 +1067,50 @@
      "seed": 0,
      "loss": 1.0366,
      "seconds": 6741
+    }
+   ]
+  },
+  {
+   "cell": {"shared": "both", "pick": "stopped", "steps": 32000},
+   "stored_weights": 3394952,
+   "rate": 0.002,
+   "loss": 1.0336,
+   "seed_sd": 0.0026,
+   "runs": [
+    {
+     "file": "runs/32000/both-stopped-router-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.0419,
+     "seconds": 5756
+    },
+    {
+     "file": "runs/32000/both-stopped-router-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.032,
+     "seconds": 5768
+    },
+    {
+     "file": "runs/32000/both-stopped-router-lr0.002-s1.json",
+     "rate": 0.002,
+     "seed": 1,
+     "loss": 1.0366,
+     "seconds": 5780
+    },
+    {
+     "file": "runs/32000/both-stopped-router-lr0.002-s2.json",
+     "rate": 0.002,
+     "seed": 2,
+     "loss": 1.0323,
+     "seconds": 5777
+    },
+    {
+     "file": "runs/32000/both-stopped-router-lr0.004-s0.json",
+     "rate": 0.004,
+     "seed": 0,
+     "loss": 1.0397,
+     "seconds": 5846
     }
    ]
   },
@@ -1758,6 +1885,33 @@
      "seed": 0,
      "loss": 1.1208,
      "seconds": 1468
+    }
+   ]
+  },
+  {
+   "cell": {"shared": "both", "pick": "stopped", "steps": 8000},
+   "stored_weights": 3394952,
+   "runs": [
+    {
+     "file": "runs/8000/both-stopped-router-lr0.0005-s0.json",
+     "rate": 0.0005,
+     "seed": 0,
+     "loss": 1.1865,
+     "seconds": 1560
+    },
+    {
+     "file": "runs/8000/both-stopped-router-lr0.001-s0.json",
+     "rate": 0.001,
+     "seed": 0,
+     "loss": 1.144,
+     "seconds": 1550
+    },
+    {
+     "file": "runs/8000/both-stopped-router-lr0.002-s0.json",
+     "rate": 0.002,
+     "seed": 0,
+     "loss": 1.1271,
+     "seconds": 1682
     }
    ]
   },
