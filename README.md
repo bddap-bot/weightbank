@@ -117,6 +117,12 @@ not about banks a model is trained with.
 - **Settled routers.** Two diagnostics of a router. After a quarter of training, either each
   module keeps its router's most common pick on training text from then on (`frozen`), or
   the router's weights stop learning while picks stay per token (`stopped`).
+- **Picks laid over the mod map.** `freed` is the mod map for a quarter of training with
+  the routers idle; then the routers pick per token, the score of the module's mod-map chunk
+  carrying a bonus of 6 that falls in a straight line to nothing by half of training, so the
+  model that is evaluated is the router alone. `held` is a per-token pick from the first
+  step whose score for the module's mod-map chunk carries a constant bonus of 2, which a
+  trained router can outvote.
 - **Architectures.** `classic` is the model above, with a learned position table, layer
   norms and a GELU feed-forward. `modern` has rotary positions on queries and keys in place
   of the position table, root-mean-square norms, and a gated feed-forward (SiLU gate, hidden

@@ -615,11 +615,36 @@ attention picks are not (one chunk gets under a tenth of them and another nearly
 usage tables under "How much picks vary by input"). The reading this suggests, and no run
 tests: the routers arrive at a poor assignment of modules to chunks, and the per-token pick
 pays for it. What stays open is whether the 0.019 is the price of that assignment or of
-mixing chunks token by token as such. No run here has a per-token pick laid over a good assignment. Two hypotheses
-in the ledger ask for one, and neither has a cell yet: a pick that starts as the mod map
-and is freed once the chunks have specialised
-(`a-pick-freed-from-the-fixed-map-beats-a-pick-learned-from-the-start`), and a pick held to
-lean on the bank evenly (`a-pick-held-to-an-even-assignment-closes-the-distance`).
+mixing chunks token by token as such. None of the runs above has a per-token pick laid
+over a good assignment. The next section builds two.
+
+### A pick laid over the mod map: freed and held
+
+Two pick values put a per-token pick over the assignment known to be good, the mod map.
+
+`freed` starts as the mod map. For the first quarter of training every module computes
+through its mod-map chunk and the routers are idle, so the chunks specialise under the map.
+From then on the routers pick per token, and the score of the module's mod-map chunk
+carries a bonus that starts at {{freed-lean}} and falls in a straight line to nothing by half of
+training. At that bonus an untrained router leaves the map on {{freed-off-map}} of sampled picks,
+so the handover does not jolt the model; the second half of training has no bonus, and the
+model evaluated is the router alone. The quarter is the point the frozen and stopped
+diagnostics above use.
+
+`held` is a per-token pick from the first step with a constant bonus of {{held-lean}} on the score of
+the module's mod-map chunk, kept at evaluation. An untrained router then puts {{held-on-map}} of a
+module's picks on its mod-map chunk. The bonus is a standing lean, not a lock: a trained
+router can outvote it token by token, and could learn to cancel it for a module outright,
+so the table below is what says whether the assignment stayed the mod map's.
+
+Both store what `both-routed` stores (the banks and the routers, 1.0% above the mod map)
+and choose their learning rate by the same protocol. How far the picks sit from the mod map
+at the end of training, on validation text, is in the table below. A model whose picks
+never leave the map is the mod map and shows nothing about picking. The free per-token pick
+is listed for scale only: nothing ties its routers' numbering of the chunks to the mod
+map's, so three quarters of its picks fall off the map by chance.
+
+{{off-map}}
 
 ## Reuse without a router, by number of chunks
 

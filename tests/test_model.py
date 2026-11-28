@@ -11,7 +11,10 @@ from weightbank import train
 from weightbank.configs import BANK, FIXED_MAP, FULL, KEYS, MODULES, NO_ROUTER, NOISE_FREE, OWN_CHUNK, config, named
 from weightbank.model import (
     CONTEXT,
+    FREED_LEAN,
+    HELD_LEAN,
     MODERN,
+    SETTLE_PART,
     VOCAB,
     Bank,
     Drawn,
@@ -19,6 +22,7 @@ from weightbank.model import (
     Fixed,
     Layout,
     KeyRouter,
+    Lean,
     ModelConfig,
     Own,
     RootMeanSquareNorm,
@@ -516,6 +520,107 @@ def test_settling_the_router_stops_its_learning_and_keeps_picks_by_input() -> No
     assert all(parameter.grad is None for parameter in model.feed_forward.router.parameters())
     assert all(parameter.grad is not None for chunk in model.feed_forward.chunks for parameter in chunk.parameters())
     assert any(len(picks.chunk.unique()) > 1 for picks in trace.feed_forward)
+
+
+def still(model: Transformer) -> None:
+    for bank in (model.feed_forward, model.attention):
+        for parameter in () if bank.router is None else bank.router.parameters():
+            nn.init.zeros_(parameter)
+
+
+MOD_MAP = [[0], [1], [0], [1]]
+
+
+def test_a_freed_pick_is_the_mod_map_until_a_quarter_of_training_then_leans_on_it_less_each_step() -> None:
+    freed = Routed(2, lean=Lean.FREED)
+    steps = 8 * SETTLE_PART
+    assert [freed.lean_at(step, steps) for step in (0, 7)] == [None, None]
+    assert [freed.lean_at(step, steps) for step in (8, 12, 16, 31, steps)] == [FREED_LEAN, FREED_LEAN / 2, 0.0, 0.0, 0.0]
+    torch.manual_seed(0)
+    model = small(freed, freed)
+    logits, trace = model(tokens())
+    logits.square().mean().backward()
+    for bank, kind in ((model.feed_forward, trace.feed_forward), (model.attention, trace.attention)):
+        assert bank.router is not None and all(parameter.grad is None for parameter in bank.router.parameters())
+        assert [picks.chunk.unique().tolist() for picks in kind] == MOD_MAP
+
+
+def test_training_leaves_a_freed_router_alone_for_a_quarter_and_trains_it_after() -> None:
+    torch.manual_seed(0)
+    model = small(Routed(2, lean=Lean.FREED), Routed(2, lean=Lean.FREED))
+    plan = train.Plan("unused", 0, 2 * SETTLE_PART, 1e-3)
+    optimizer = train.optimizer_for(model, plan.peak_rate)
+    scaler = GradScaler("cpu", enabled=False)
+    routers = [bank.router for bank in (model.feed_forward, model.attention)]
+    assert all(router is not None for router in routers)
+    before = [parameter.clone() for router in routers if router is not None for parameter in router.parameters()]
+
+    def moved() -> list[bool]:
+        now = [parameter for router in routers if router is not None for parameter in router.parameters()]
+        return [not torch.equal(was, parameter) for was, parameter in zip(before, now, strict=True)]
+
+    leans = []
+    for step in range(plan.steps):
+        if step == plan.steps // SETTLE_PART:
+            assert not any(moved())
+        train.step_at(model, optimizer, scaler, tokens(), tokens(), step, plan)
+        leans.append(model.feed_forward.lean)
+        assert model.attention.lean == leans[-1]
+    assert leans == [None, None, FREED_LEAN, FREED_LEAN / 2, 0.0, 0.0, 0.0, 0.0]
+    assert all(moved())
+
+
+def test_a_freed_pick_ends_as_the_router_alone() -> None:
+    torch.manual_seed(0)
+    freed, plain = small(Routed(2, lean=Lean.FREED), Own()), small(Routed(2), Own())
+    plain.load_state_dict(freed.state_dict())
+    freed.advance(7, 8)
+    freed.eval()
+    plain.eval()
+    batch = tokens()
+    assert torch.equal(freed(batch)[0], plain(batch)[0])
+
+
+def test_a_lean_adds_to_the_score_of_the_modules_chunk_in_the_mod_map() -> None:
+    torch.manual_seed(0)
+    model = small(Routed(2, lean=Lean.HELD), Routed(2, lean=Lean.HELD))
+    still(model)
+    for step in (0, 5, 8):
+        model.advance(step, 8)
+        assert model.feed_forward.lean == model.attention.lean == HELD_LEAN
+    _, trace = model(torch.randint(VOCAB, (64, CONTEXT)))
+    expected = math.exp(HELD_LEAN) / (math.exp(HELD_LEAN) + 1)
+    for kind in (trace.feed_forward, trace.attention):
+        for module, picks in enumerate(kind):
+            assert (picks.chunk == module % 2).float().mean().item() == pytest.approx(expected, abs=0.02)
+            assert picks.confidence.mean().item() == pytest.approx(expected)
+    model.eval()
+    _, trace = model(tokens())
+    assert [picks.chunk.unique().tolist() for picks in trace.feed_forward] == MOD_MAP
+
+
+def test_a_router_that_scores_another_chunk_above_the_lean_picks_it_and_learns() -> None:
+    torch.manual_seed(0)
+    model = small(Routed(4, lean=Lean.HELD), Own())
+    still(model)
+    router = model.feed_forward.router
+    assert isinstance(router, ScoreRouter)
+    with torch.no_grad():
+        router.score.bias[3] = HELD_LEAN + 1.0
+    model.eval()
+    _, trace = model(tokens())
+    assert [picks.chunk.unique().tolist() for picks in trace.feed_forward] == [[3]] * 4
+    model.train()
+    logits, _ = model(tokens())
+    logits.square().mean().backward()
+    assert router.score.bias.grad is not None and bool(router.score.bias.grad.any())
+
+
+def test_a_pick_with_no_lean_never_leans() -> None:
+    model = small(Routed(4), Routed(4, settled=Settled.ROUTER))
+    for step in (0, 3, 8):
+        model.advance(step, 8)
+        assert model.feed_forward.lean == model.attention.lean == 0.0
 
 
 def test_the_classic_tables_start_as_they_always_have() -> None:

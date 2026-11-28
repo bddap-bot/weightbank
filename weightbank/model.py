@@ -20,6 +20,9 @@ CLASSIC = "classic"
 MODERN = "modern"
 ARCHITECTURES = (CLASSIC, MODERN)
 ROTARY_BASE = 10000.0
+SETTLE_PART = 4
+FREED_LEAN = 6.0
+HELD_LEAN = 2.0
 
 
 @dataclass(frozen=True)
@@ -69,12 +72,29 @@ class Settled(Enum):
     ROUTER = "router"
 
 
+class Lean(Enum):
+    NOTHING = "nothing"
+    HELD = "held"
+    FREED = "freed"
+
+
 @dataclass(frozen=True)
 class Routed:
     chunks: int
     noise: bool = True
     keys: bool = False
     settled: Settled = Settled.NOTHING
+    lean: Lean = Lean.NOTHING
+
+    def lean_at(self, step: int, steps: int) -> float | None:
+        if self.lean is Lean.NOTHING:
+            return 0.0
+        if self.lean is Lean.HELD:
+            return HELD_LEAN
+        freed = steps // SETTLE_PART
+        if step < freed or not steps:
+            return None
+        return FREED_LEAN * max(0.0, 1.0 - (step - freed) / max(1, freed))
 
 
 Sharing = Own | Fixed | Routed
@@ -226,8 +246,11 @@ class Router(nn.Module):
     def logits(self, x: Tensor, module: int) -> Tensor:
         raise NotImplementedError
 
-    def forward(self, x: Tensor, module: int) -> Picks:
-        return pick(self.logits(x, module).float(), self.training and self.noise, self.training)
+    def forward(self, x: Tensor, module: int, home: int = 0, lean: float = 0.0) -> Picks:
+        logits = self.logits(x, module).float()
+        if lean:
+            logits = logits + lean * F.one_hot(torch.tensor(home, device=x.device), logits.shape[-1])
+        return pick(logits, self.training and self.noise, self.training)
 
 
 class ScoreRouter(Router):
@@ -293,6 +316,12 @@ class Bank(nn.Module, Generic[Stored]):
             self.registered_corrections = nn.ModuleList(self.corrections)
         self.settled_picks: list[int] | None = None
         self.map = sharing.map(config.modules) if isinstance(sharing, Fixed) else None
+        self.home = Fixed(sharing.chunks).map(config.modules) if isinstance(sharing, Routed) else ()
+        self.lean = sharing.lean_at(0, 0) if isinstance(sharing, Routed) else 0.0
+
+    def advance(self, step: int, steps: int) -> None:
+        if isinstance(self.sharing, Routed):
+            self.lean = self.sharing.lean_at(step, steps)
 
     def correction(self, module: int) -> Correction | None:
         return None if self.corrections is None else self.corrections[module]
@@ -311,7 +340,9 @@ class Bank(nn.Module, Generic[Stored]):
         if self.settled_picks is not None:
             return fixed(x, self.settled_picks[module], len(self.chunks))
         if self.router is not None:
-            picks: Picks = self.router(x, module)
+            if self.lean is None:
+                return fixed(x, self.home[module], len(self.chunks))
+            picks: Picks = self.router(x, module, self.home[module], self.lean)
             return picks
         if self.map is not None:
             return fixed(x, self.map[module], len(self.chunks))
@@ -340,6 +371,10 @@ class Transformer(nn.Module):
         self.feed_forward = Bank(config, config.feed_forward, FeedForward)
         self.final_norm = norm(config)
         self.head = linear(config.width, VOCAB)
+
+    def advance(self, step: int, steps: int) -> None:
+        for bank in (self.attention, self.feed_forward):
+            bank.advance(step, steps)
 
     def stored_weights(self) -> int:
         return sum(parameter.numel() for parameter in self.parameters())

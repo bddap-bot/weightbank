@@ -5,7 +5,7 @@ from dataclasses import fields
 from typing import Any
 
 from weightbank.ledger import STEPS, Cell, Ledger
-from weightbank.model import Drawn, Fixed, Layout, ModelConfig, Routed, Settled, Sharing
+from weightbank.model import Drawn, Fixed, Layout, Lean, ModelConfig, Routed, Settled, Sharing
 
 LEDGER = Ledger.read()
 SHARED = "shared"
@@ -27,6 +27,8 @@ PICKS: dict[str, Callable[[int], Sharing]] = {
     "keys": lambda chunks: Routed(chunks, keys=True),
     "frozen": lambda chunks: Routed(chunks, settled=Settled.PICKS),
     "stopped": lambda chunks: Routed(chunks, settled=Settled.ROUTER),
+    "freed": lambda chunks: Routed(chunks, lean=Lean.FREED),
+    "held": lambda chunks: Routed(chunks, lean=Lean.HELD),
 }
 
 

@@ -32,6 +32,7 @@ from weightbank.configs import (
     ROUTED,
     ROUTER_VARIANTS,
     SHALLOWER,
+    SHARED,
     WIDTH,
     model_config,
     named,
@@ -40,7 +41,7 @@ from weightbank.configs import (
     rate_source,
 )
 from weightbank.ledger import ABANDONED, SEEDS, STEPS, Cell, Ledger, Row
-from weightbank.model import Fixed
+from weightbank.model import FREED_LEAN, HELD_LEAN, Fixed
 from weightbank.sweep import (
     FIRST_RATE,
     FIRST_STEPS,
@@ -70,6 +71,7 @@ NARROWER_LINE = "#52514e"
 SHALLOWER_LINE = "#a3a29c"
 FIXED_LINE = "#0b0b0b"
 PICKING = (*ROUTED, *ROUTER_VARIANTS)
+OVER_THE_MAP = ("routed", "freed", "held")
 COMPARED = (*PICKING, *FIXED_MAP.values())
 COLORS = {
     "ff-routed": "#2a78d6",
@@ -560,6 +562,57 @@ def picks_table(summary: Summary) -> str:
         ],
         rows,
     )
+
+
+def home_counts(stats: PickStats) -> list[int]:
+    home = Fixed(len(stats.counts[0])).map(len(stats.counts))
+    return [row[chunk] for row, chunk in zip(stats.counts, home, strict=True)]
+
+
+def off_map(stats: PickStats) -> list[float]:
+    return [1 - count / sum(row) for row, count in zip(stats.counts, home_counts(stats), strict=True)]
+
+
+def at_home(stats: PickStats) -> int:
+    return sum(count == max(row) and row.count(count) == 1 for row, count in zip(stats.counts, home_counts(stats), strict=True))
+
+
+def off_map_table(ledger: Ledger, steps: int) -> str:
+    rows = []
+    for pick in OVER_THE_MAP:
+        row = ledger.row(ledger.cell({SHARED: "both", PICK: pick, STEPS: steps}))
+        if row is None or row.losses is None:
+            continue
+        for run in runs_of(ledger, row):
+            for kind in ("feed_forward", "attention"):
+                stats: PickStats | None = getattr(run, kind)
+                assert stats is not None
+                away = off_map(stats)
+                total = sum(map(sum, stats.counts))
+                usage = [sum(counts[chunk] for counts in stats.counts) / total for chunk in range(len(stats.counts[0]))]
+                rows.append(
+                    [
+                        ledger.name(row.cell),
+                        kind.replace("_", "-"),
+                        str(run.seed),
+                        f"{fmean(away):.2f}",
+                        shares(away),
+                        f"{at_home(stats)} of {len(stats.counts)}",
+                        shares(usage),
+                    ]
+                )
+    return table(
+        [
+            "configuration",
+            "bank",
+            "seed",
+            "share of picks off the mod map",
+            "the same, per module",
+            "modules whose most common pick is the mod map's",
+            "share of all picks, per chunk",
+        ],
+        rows,
+    ) if rows else "No per-token pick has three seeds at this budget."
 
 
 def cell_text(ledger: Ledger, cell: dict[str, int | str]) -> str:
@@ -1111,6 +1164,11 @@ def main() -> None:
         "sampled": sampled_table(long.summaries),
         "log-windows": f"{LOG_WINDOWS:,}",
         "pick-variation": pick_variation_table(first, long),
+        "off-map": off_map_table(ledger, LONG_STEPS),
+        "freed-lean": f"{FREED_LEAN:g}",
+        "held-lean": f"{HELD_LEAN:g}",
+        "freed-off-map": f"{3 / (3 + math.exp(FREED_LEAN)):.1%}",
+        "held-on-map": f"{math.exp(HELD_LEAN) / (3 + math.exp(HELD_LEAN)):.0%}",
         "runs": runs_table(ledger),
         "summary-long": summary_table(long.summaries),
         "summary-first": summary_table(first.summaries),

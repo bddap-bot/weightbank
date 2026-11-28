@@ -10,7 +10,7 @@ import pytest
 from weightbank import configs
 from weightbank.configs import ROUNDS_ONE_AND_TWO, model_config, plain_words
 from weightbank.ledger import OPEN, PATH, REFUTED, SEEDS, STEPS, SUPPORTED, Cell, Ledger, Row, RunRow, verdict
-from weightbank.model import Drawn, Fixed, Layout, Own, Routed, Settled, Transformer
+from weightbank.model import Drawn, Fixed, Layout, Lean, Own, Routed, Settled, Transformer
 
 RUNS = Path("runs")
 
@@ -236,6 +236,8 @@ def test_each_pick_builds_its_own_kind_of_bank() -> None:
         "keys": Routed(4, keys=True),
         "frozen": Routed(4, settled=Settled.PICKS),
         "stopped": Routed(4, settled=Settled.ROUTER),
+        "freed": Routed(4, lean=Lean.FREED),
+        "held": Routed(4, lean=Lean.HELD),
     }
     drawn = {draw: model_config(ledger.cell({"shared": "ff", "pick": "drawn", "draw": draw})).feed_forward for draw in (1, 4)}
     assert drawn == {1: Fixed(4, Drawn(1)), 4: Fixed(4, Drawn(4))}

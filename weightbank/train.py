@@ -17,7 +17,7 @@ from torch.amp.grad_scaler import GradScaler
 
 from weightbank import data
 from weightbank.configs import LEDGER, config
-from weightbank.model import CONTEXT, Picks, Transformer
+from weightbank.model import CONTEXT, SETTLE_PART, Picks, Transformer
 
 RUNS = Path("runs")
 BATCH = 64
@@ -26,7 +26,6 @@ WARMUP = 200
 WEIGHT_DECAY = 0.1
 LOG_EVERY = 500
 LOG_WINDOWS = 8 * EVAL_BATCH
-SETTLE_PART = 4
 PACE_REACH = 2
 GPU_MIB = "WEIGHTBANK_GPU_MIB"
 
@@ -197,6 +196,15 @@ def step_once(
     return loss
 
 
+def step_at(
+    model: Transformer, optimizer: torch.optim.AdamW, scaler: GradScaler, inputs: Tensor, targets: Tensor, step: int, plan: Plan
+) -> Tensor:
+    model.advance(step, plan.steps)
+    for group in optimizer.param_groups:
+        group["lr"] = rate(step, plan.steps, plan.peak_rate)
+    return step_once(model, optimizer, scaler, inputs, targets)
+
+
 def train(plan: Plan) -> Run:
     name, seed, steps = plan.config, plan.seed, plan.steps
     device = torch.device("cuda")
@@ -218,10 +226,8 @@ def train(plan: Plan) -> Run:
     for step in range(steps):
         if step == steps // SETTLE_PART:
             settle(model, corpus.train[: LOG_WINDOWS * CONTEXT + 1])
-        for group in optimizer.param_groups:
-            group["lr"] = rate(step, steps, plan.peak_rate)
         inputs, targets = data.sample(corpus.train, BATCH, CONTEXT, generator)
-        loss = step_once(model, optimizer, scaler, inputs, targets)
+        loss = step_at(model, optimizer, scaler, inputs, targets, step, plan)
         if (step + 1) % LOG_EVERY == 0:
             logged = loss.item()
             paces.append((time.monotonic() - started) / LOG_EVERY)

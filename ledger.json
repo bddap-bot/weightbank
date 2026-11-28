@@ -14,7 +14,7 @@
   },
   {
    "name": "pick",
-   "meaning": "how a module gets its chunk: fixed is module i to chunk i mod N; ends gives the first module and the last a chunk of their own and cycles the modules between them through the rest; drawn is a map drawn at random before training and kept for the whole run (each module's chunk is drawn uniformly, and the modules are drawn again together until every chunk is used); routed is a per-token learned pick sampled with noise; argmax the same without noise; keys scores a learned key per chunk; frozen is routed until a quarter of training, then each module keeps its most common pick; stopped is routed with the router's weights held still after that quarter",
+   "meaning": "how a module gets its chunk: fixed is module i to chunk i mod N; ends gives the first module and the last a chunk of their own and cycles the modules between them through the rest; drawn is a map drawn at random before training and kept for the whole run (each module's chunk is drawn uniformly, and the modules are drawn again together until every chunk is used); routed is a per-token learned pick sampled with noise; argmax the same without noise; keys scores a learned key per chunk; frozen is routed until a quarter of training, then each module keeps its most common pick; stopped is routed with the router's weights held still after that quarter; freed is the mod map for a quarter of training, then a per-token pick whose score for the module's mod-map chunk carries a bonus of 6 that falls in a straight line to nothing by half of training, so the pick ends as the router alone; held is a per-token pick from the first step whose score for the module's mod-map chunk carries a constant bonus of 2, at evaluation too, which the router can outvote",
    "default": "fixed",
    "values": [
     ["fixed", "fixed", "fixed map"],
@@ -24,7 +24,9 @@
     ["argmax", "routed-argmax", "picked per token without sampling noise"],
     ["keys", "routed-keys", "picked per token by a key per chunk"],
     ["frozen", "frozen-picks", "picks frozen after a quarter of training"],
-    ["stopped", "stopped-router", "router stopped after a quarter of training"]
+    ["stopped", "stopped-router", "router stopped after a quarter of training"],
+    ["freed", "freed", "per-token pick freed from the fixed map"],
+    ["held", "held", "per-token pick leaning on the fixed map"]
    ]
   },
   {
@@ -229,18 +231,52 @@
    ]
   },
   {
-   "id": "a-pick-freed-from-the-fixed-map-beats-a-pick-learned-from-the-start",
-   "priority": 4,
+   "id": "a-pick-freed-from-the-fixed-map-beats-the-fixed-map",
+   "priority": 1,
    "status": "open",
-   "statement": "A per-token pick that starts as the fixed map and is freed only once the chunks have specialised beats a pick learned from the first step: every module computes through the mod map for the first part of training, then a router initialised to reproduce that map takes over. A chunk has to be something stable before choosing among chunks can mean anything. No cell expresses this yet: it needs a pick value that hands over from the map to a router. Its cell would train at the routed model's pace: the stopped router's cell was estimated at 7.6 GPU-hours under the rate protocol and took 9.4.",
-   "settle": []
+   "statement": "A per-token pick laid over a good assignment beats that assignment: the freed pick, which starts as the mod map and is let go once the chunks have specialised, reaches a lower loss than the mod map over the same two banks at the same steps, its rate chosen by the same protocol. The freed model stores the routers on top of the banks, 1.0% more weights. A pick that never leaves the map is the mod map, so the report says how far the freed picks moved off it.",
+   "settle": [
+    {
+     "lower": {"shared": "both", "pick": "freed", "steps": 32000},
+     "higher": {"shared": "both", "steps": 32000}
+    }
+   ]
+  },
+  {
+   "id": "a-pick-freed-from-the-fixed-map-beats-a-pick-learned-from-the-start",
+   "priority": 1,
+   "status": "open",
+   "statement": "A per-token pick that starts as the fixed map and is freed only once the chunks have specialised beats a pick learned from the first step. A chunk has to be something stable before choosing among chunks can mean anything. The pick value freed is that pick: every module computes through the mod map for the first quarter of training with the routers idle; from then on the routers pick per token, with a bonus of 6 on the score of the module's mod-map chunk (under 1% of sampled picks leave the map at that moment) that falls in a straight line to nothing by half of training. The second half trains the router alone, and that is the model evaluated. A model whose picks never leave the mod map is the mod map, which already ends below the pick learned from the start, so the comparison counts only with the share of picks off the map the report gives beside it.",
+   "settle": [
+    {
+     "lower": {"shared": "both", "pick": "freed", "steps": 32000},
+     "higher": {"shared": "both", "pick": "routed", "steps": 32000}
+    }
+   ]
   },
   {
    "id": "a-pick-held-to-an-even-assignment-closes-the-distance",
-   "priority": 4,
+   "priority": 2,
    "status": "open",
-   "statement": "A per-token pick loses to the mod map because its routers lean each module on too few chunks, not because mixing chunks token by token is worse as such: a router held so that the modules' most common picks spread over the bank as evenly as the mod map spreads them reaches the mod map's loss. No cell expresses this yet: it needs a pick value for a router with a term that keeps the assignment even. Its cell would train at the routed model's pace, about 9 GPU-hours under the rate protocol.",
-   "settle": []
+   "statement": "A per-token pick loses to the mod map because its routers lean each module on too few chunks, not because mixing chunks token by token is worse as such: a per-token pick whose routers are kept leaning on the bank as evenly as the mod map spreads the modules ends below the free per-token pick. The pick value held is that pick: a per-token pick from the first step with a constant bonus of 2 on the score of the module's mod-map chunk (an untrained router then puts 71% of a module's picks on that chunk), kept at evaluation. The bonus is a standing lean and not a lock: the router can outvote it token by token, so the report gives how many modules' most common pick stayed the mod map's. Whether it reaches the mod map itself is the next hypothesis. A model whose picks never leave the mod map is the mod map, which already ends below the pick learned from the start, so the comparison counts only with the share of picks off the map the report gives beside it.",
+   "settle": [
+    {
+     "lower": {"shared": "both", "pick": "held", "steps": 32000},
+     "higher": {"shared": "both", "pick": "routed", "steps": 32000}
+    }
+   ]
+  },
+  {
+   "id": "a-pick-held-to-an-even-assignment-beats-the-fixed-map",
+   "priority": 2,
+   "status": "open",
+   "statement": "A per-token pick held near the mod map reaches a lower loss than the mod map over the same two banks at the same steps, its rate chosen by the same protocol.",
+   "settle": [
+    {
+     "lower": {"shared": "both", "pick": "held", "steps": 32000},
+     "higher": {"shared": "both", "steps": 32000}
+    }
+   ]
   },
   {
    "id": "the-map-matters-more-with-more-modules",
